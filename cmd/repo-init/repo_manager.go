@@ -6,10 +6,10 @@ import (
 	"io/ioutil"
 	"k8s.io/test-infra/prow/cmd/generic-autobumper/bumper"
 	"k8s.io/test-infra/prow/config/secret"
+	"k8s.io/test-infra/prow/flagutil"
+	"k8s.io/test-infra/prow/github"
 	"os"
-	"strconv"
 	"sync"
-	"time"
 )
 
 type repo struct {
@@ -19,20 +19,33 @@ type repo struct {
 }
 
 var (
+	ghClient       github.Client
+	systemGhClient github.Client
 	numRepos       int
 	availableRepos []*repo
 	inUseRepos     []*repo
 )
 
-func initRepoManager(repoCount int) {
+func initRepoManager(githubOptions flagutil.GitHubOptions) {
 	logrus.SetLevel(logrus.DebugLevel)
 	//if err := validateOptions(o); err != nil {
 	//	logrus.WithError(err).Fatal("Invalid arguments.")
 	//}
-	numRepos = repoCount
+	numRepos = 4
 
-	stdout := bumper.HideSecretsWriter{Delegate: os.Stdout, Censor: secret.Censor}
-	stderr := bumper.HideSecretsWriter{Delegate: os.Stderr, Censor: secret.Censor}
+	sa := &secret.Agent{}
+	if err := sa.Start([]string{githubOptions.TokenPath}); err != nil {
+		logrus.WithError(err).Fatal("Failed to start secrets agent")
+	}
+
+	var err error
+	ghClient, err = githubOptions.GitHubClient(sa, false)
+	if err != nil {
+		logrus.WithError(err).Fatal("error getting GitHub client")
+	}
+
+	stdout := bumper.HideSecretsWriter{Delegate: os.Stdout, Censor: sa}
+	stderr := bumper.HideSecretsWriter{Delegate: os.Stderr, Censor: sa}
 
 	repoChannel := make(chan *repo)
 	for i := 0; i < numRepos; i++ {
@@ -83,75 +96,62 @@ func returnInUse(r *repo) {
 	for i, cr := range inUseRepos {
 		if r == cr {
 			inUseRepos = append(inUseRepos[i:], inUseRepos[i+1:]...)
-			r.inUseBy = ""
 			availableRepos = append(availableRepos, r)
 		}
 	}
 }
 
-func pushChanges(githubUsername, githubToken string, createPR bool) (string, error) {
-	err := os.Chdir(availableRepos[0].path)
-	if err != nil {
-		logrus.WithError(err).Error("Can't change dir")
-		return "", err
-	}
+func pushChanges(githubUsername, githubToken string) error {
 	logrus.Warnf("Pushing changes")
-
-	if err := commitChanges(
-		"Adding new ci-operator config.",
-		fmt.Sprintf("%s@users.noreply.github.com", githubUsername),
-		githubUsername,
-	); err != nil {
-		return "", fmt.Errorf("failed to commit changes: %w", err)
-	}
-
-	targetBranch := fmt.Sprintf("new-ci-config-%s", strconv.FormatInt(time.Now().Unix(), 10))
-	if err := bumper.GitPush(
+	const targetBranch = "new-repo-initializer"
+	if err := bumper.GitCommitAndPush(
 		fmt.Sprintf("https://%s:%s@github.com/%s/release.git", githubUsername, githubToken, githubUsername),
 		targetBranch,
+		githubUsername,
+		fmt.Sprintf("%s@users.noreply.github.com", githubUsername),
+		"Create new config",
 		os.Stdout,
 		os.Stderr,
-		availableRepos[0].path,
+		false,
 	); err != nil {
-		return "", fmt.Errorf("failed to push changes: %w", err)
-	}
-
-	if createPR {
-		ghClient := githubOptions.GitHubClientWithAccessToken(githubToken)
-
-		//TODO: fix this
-		if err := bumper.UpdatePullRequestWithLabels(
-			ghClient,
-			"openshift",
-			"release",
-			"[wip] - Testing testing 123",
-			"This is just a fun thing",
-			githubUsername+":"+targetBranch,
-			"master",
-			targetBranch,
-			true,
-			nil,
-			false,
-		); err != nil {
-			return "", fmt.Errorf("failed to create PR: %w", err)
-		}
-
-	}
-
-	return targetBranch, nil
-}
-
-func commitChanges(message, email, name string) error {
-	if err := bumper.Call(os.Stdout, os.Stderr, "git", "add", "-A"); err != nil {
-		return fmt.Errorf("git add: %w", err)
-	}
-	commitArgs := []string{"commit", "-m", message}
-	if name != "" && email != "" {
-		commitArgs = append(commitArgs, "--author", fmt.Sprintf("%s <%s>", name, email))
-	}
-
-	if err := bumper.Call(os.Stdout, os.Stderr, "git", commitArgs...); err != nil {
-		return fmt.Errorf("git commit: %w", err)
+		return fmt.Errorf("failed to push changes: %w", err)
 	}
 	return nil
 }
+
+//
+//func checkout(steps []step, author string, stdout, stderr io.Writer) (needsPushing bool, err error) {
+//	startCommitOut, err := exec.Command("git", "rev-parse", "HEAD").CombinedOutput()
+//	if err != nil {
+//		return false, fmt.Errorf("failed to execute `git rev-parse HEAD`: %w\noutput:%s\n", err, string(startCommitOut))
+//	}
+//	startCommitSHA := strings.TrimSpace(string(startCommitOut))
+//
+//	var didCommit bool
+//	for _, step := range steps {
+//		committed, err := runAndCommitIfNeeded(stdout, stderr, author, step.command, step.arguments)
+//		if err != nil {
+//			return false, fmt.Errorf("failed to run command and commit the changes: %w", err)
+//		}
+//
+//		if committed {
+//			didCommit = didCommit || true
+//		}
+//	}
+//
+//	if !didCommit {
+//		logrus.Info("No new commits")
+//		return false, nil
+//	}
+//
+//	overallDiff, err := exec.Command("git", "diff", startCommitSHA).CombinedOutput()
+//	if err != nil {
+//		return false, fmt.Errorf("failed to check the overall diff: %w, out:\n%s\n", err, string(overallDiff))
+//	}
+//	if strings.TrimSpace(string(overallDiff)) == "" {
+//		logrus.Info("Empty overall diff")
+//		return false, nil
+//	}
+//
+//	return true, nil
+//}

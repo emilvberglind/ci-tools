@@ -5,7 +5,8 @@ import { NotFound } from '@app/NotFound/NotFound';
 import { useDocumentTitle } from '@app/utils/useDocumentTitle';
 import { LastLocationProvider, useLastLocation } from 'react-router-last-location';
 import RepoInitWizard from "@app/RepoInitWizard/RepoInitWizard";
-import {ConfigEditor} from "@app/ConfigEditor/ConfigEditor";
+import {useContext} from "react";
+import {AuthContext} from "@app/types";
 import {Login} from "@app/Login/Login";
 import {Home} from "@app/Home/Home";
 
@@ -48,16 +49,17 @@ const routes: AppRouteConfig[] = [
         title: 'Add New Repo',
       },
       {
+        component: RepoInitWizard,
+        exact: true,
+        label: 'Edit Existing Repo Configuration',
+        path: '/edit-repo',
+        title: 'Edit Existing Repo Configuration',
+      },
+      {
         component: Login,
         exact: true,
         path: '/login',
         title: 'Login'
-      },
-      {
-        component: ConfigEditor,
-        label: 'Config Editor',
-        path: '/config-editor',
-        title: 'Edit Raw Config',
       }
     ],
   },

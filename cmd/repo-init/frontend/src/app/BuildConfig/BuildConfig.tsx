@@ -1,116 +1,83 @@
-import React, {useContext, useEffect, useState} from 'react';
-import {
-  Card,
-  CardBody,
-  CardTitle,
-  Checkbox,
-  FormGroup,
-  Select,
-  SelectOption,
-  SelectVariant,
-  TextInput
-} from '@patternfly/react-core';
-import {ConfigContext, setVal, UpdateGraphType, WizardContext} from "@app/types";
-import {PullspecSubstitutions} from "@app/BuildConfig/PullspecSubstitutions";
-import {BaseImages} from "@app/BuildConfig/BaseImages";
-import {ErrorMessage} from "@app/Common/Messaging";
+import React, {useContext, useEffect} from 'react';
+import {Checkbox, FormGroup, TextInput} from '@patternfly/react-core';
+import {WizardContext} from "@app/types";
 
 const RepoBuildConfig: React.FunctionComponent = () => {
   const context = useContext(WizardContext);
-  const configContext = useContext(ConfigContext);
-  const [updateGraphTypeOpen, setUpdateGraphTypeOpen] = useState(false)
 
-  useEffect(() => {
-    validate();
-  }, []);
+  // useEffect(() => {
+  //   if (!context.config.buildSettings?.buildPromotes) {
+  //     context.setConfig({
+  //       ...context.config, buildSettings: {
+  //         partOfOSRelease: false,
+  //         needsBase: false,
+  //         needsOS: false
+  //       }
+  //     });
+  //   }
+  // }, [context.config.buildSettings?.buildPromotes]);
 
-  function handleChange(val, event) {
+  const handleChange = (val, event) => {
     const target = event.target;
     const value = target.type === 'checkbox' ? target.checked : target.value;
-    let config = {...configContext.config};
-    setVal(config.buildSettings, target.name, value);
-    configContext.setConfig(config);
-    validate();
+    let updatedBuildSettings = context.config.buildSettings;
+    setVal(updatedBuildSettings, target.name, value);
+    context.setConfig({...context.config, buildSettings: updatedBuildSettings});
+  };
+
+  function setVal(obj,is, value) {
+    if (typeof is == 'string')
+      return setVal(obj,is.split('.'), value);
+    else if (is.length==1 && value!==undefined)
+      return obj[is[0]] = value;
+    else if (is.length==0)
+      return obj;
+    else
+      return setVal(obj[is[0]],is.slice(1), value);
   }
 
-  function validate() {
-    let buildSettings = configContext.config.buildSettings;
-    let valid = buildSettings &&
-      buildSettings.goVersion &&
-      buildSettings.buildCommands &&
-      buildSettings.testBuildCommands;
-    if (valid) {
-      context.setStep({
-        ...context.step,
-        errorMessages: [],
-        stepIsComplete: true
-      });
-    } else {
-      context.setStep({
-        ...context.step,
-        stepIsComplete: false
-      });
-
-    }
-  }
-
-  function changeUpdateGraphType(e, val) {
-    let config = configContext.config;
-    // @ts-ignore
-    config.buildSettings.operatorConfig.updateGraph = val;
-    configContext.setConfig(config);
-    setUpdateGraphTypeOpen(false);
-  }
-
-  function toggleUpdateGraphType(open) {
-    setUpdateGraphTypeOpen(open);
-  }
-
-  const NestedBuildOptions = () => {
-    if (configContext.config.buildSettings?.buildPromotes) {
+  const renderNestedBuildOptions = () => {
+    if (context.config.buildSettings?.buildPromotes) {
       return (
         <React.Fragment>
           <Checkbox
             className="nested"
-            isChecked={configContext.config.buildSettings?.partOfOSRelease}
+            isChecked={context.config.buildSettings?.partOfOSRelease}
             name="partOfOSRelease"
             label="This repository promotes images as part of the OpenShift release?"
             id="partOfOSRelease"
-            key="partOfOSRelease"
             value="partOfOSRelease"
-            isDisabled={!configContext.config.buildSettings?.buildPromotes}
+            isDisabled={!context.config.buildSettings?.buildPromotes}
             onChange={handleChange}
           />
           <Checkbox
             className="nested"
-            isChecked={configContext.config.buildSettings?.needsBase}
+            isChecked={context.config.buildSettings?.needsBase}
             name="needsBase"
             label="One or more images build on top of the OpenShift base image?"
             id="needsBase"
-            key="needsBase"
             value="needsBase"
-            isDisabled={!configContext.config.buildSettings?.buildPromotes}
+            isDisabled={!context.config.buildSettings?.buildPromotes}
             onChange={handleChange}
           />
           <Checkbox
             className="nested"
-            isChecked={configContext.config.buildSettings?.needsOS}
+            isChecked={context.config.buildSettings?.needsOS}
             name="needsOS"
             label="One or more images build on top of the CentOS base image?"
             id="needsOS"
-            key="needsOS"
             value="needsOS"
-            isDisabled={!configContext.config.buildSettings?.buildPromotes}
+            isDisabled={!context.config.buildSettings?.buildPromotes}
             onChange={handleChange}
           />
         </React.Fragment>
-      );
+      )
     } else {
       return <React.Fragment/>
     }
   }
 
-  const CompileOptions = () => {
+  const renderCompileOptions = () => {
     return (
       <React.Fragment>
         <FormGroup
@@ -120,167 +87,136 @@ const RepoBuildConfig: React.FunctionComponent = () => {
           <TextInput
             name="goVersion"
             id="goVersion"
-            key="goVersion"
-            value={configContext.config.buildSettings?.goVersion || ''}
+            defaultValue="1.13"
+            value={context.config.buildSettings?.goVersion}
             onChange={handleChange}
           />
         </FormGroup>
         <FormGroup
           label="Enter the Go import path for the repository if it uses a vanity URL (e.g. 'k8s.io/my-repo'):"
+          isRequired
+          fieldId="goImportPath">
+          <TextInput
+            name="goImportPath"
+            id="goImportPath"
+            value={context.config.buildSettings?.goImportPath}
+            onChange={handleChange}
+          />
+        </FormGroup>
+        <FormGroup
+          label="Enter the Go import path for the repository if it uses a vanity URL (e.g. 'k8s.io/my-repo'):"
+          isRequired
           fieldId="canonicalGoRepository">
           <TextInput
             name="canonicalGoRepository"
             id="canonicalRepository"
-            key="canonicalRepository"
-            value={configContext.config.buildSettings?.canonicalGoRepository || ''}
+            value={context.config.buildSettings?.canonicalGoRepository}
             onChange={handleChange}
           />
         </FormGroup>
         <FormGroup
-          label="What commands are used to build binaries? (e.g. 'go build ./cmd/...'). This will get built as the pipeline:bin image."
-          isRequired
-          fieldId="buildCommands">
-          <TextInput
-            name="buildCommands"
-            id="buildCommands"
-            key="buildCommands"
-            value={configContext.config.buildSettings?.buildCommands || ''}
-            onChange={handleChange}
-          />
-        </FormGroup>
-        <FormGroup
-          label="What commands are used to build test binaries? (e.g. 'go test -c ./test/...'). This will get built as the pipeline:test-bin image."
+          label="What commands are used to build test binaries? (e.g. 'go install -race ./cmd/...' or 'go test -c ./test/...')"
           isRequired
           fieldId="testBuildCommands">
           <TextInput
             name="testBuildCommands"
             id="testBuildCommands"
-            key="testBuildCommands"
-            value={configContext.config.buildSettings?.testBuildCommands || ''}
+            value={context.config.buildSettings?.testBuildCommands}
             onChange={handleChange}
           />
         </FormGroup>
-      </React.Fragment>);
+      </React.Fragment>
+    )
   }
 
-  const OperatorOptions = () => {
-    return (
-      <Card>
-        <CardTitle>Operator Config</CardTitle>
-        <CardBody>
-          <Checkbox
-            isChecked={configContext.config.buildSettings?.operatorConfig?.isOperator}
-            name="operatorConfig.isOperator"
-            label="This is an optional operator build."
-            id="operatorConfig.isOperator"
-            value="isOperator"
-            key="operatorConfig.isOperator"
-            onChange={handleChange}
-          />
-          {OperatorSubfields()}
-        </CardBody>
-      </Card>);
-  }
-
-  const OperatorSubfields = () => {
-    if (configContext.config.buildSettings?.operatorConfig?.isOperator) {
+  const renderOperatorOptions = () => {
+    if (context.config.buildSettings?.operatorSettings?.isOperator) {
       return (
         <React.Fragment>
           <FormGroup
-            label="The image name for the built bundle. Specifying a name for the bundle image allows a multistage workflow directly access the bundle by name. If not provided, a dynamically generated name will be created for the bundle and the bundle will only be accessible via the default index image (ci-index)"
-            fieldId="operatorConfig.name">
+            label="Bundle name. This is optional and will default to ci-index"
+            fieldId="operatorSettings.name">
             <TextInput
-              name="operatorConfig.name"
-              id="operatorConfig.name"
-              key="operatorConfig.name"
-              value={configContext.config.buildSettings?.operatorConfig?.name || ''}
+              name="operatorSettings.name"
+              id="operatorSettings.name"
+              value={context.config.buildSettings?.operatorSettings?.name}
               onChange={handleChange}
             />
           </FormGroup>
           <FormGroup
-            label="Path to the Dockerfile that builds the bundle image, defaulting to bundle.Dockerfile"
-            fieldId="operatorConfig.dockerfilePath">
+            label="Bundle package name."
+            fieldId="operatorSettings.package"
+            isRequired>
             <TextInput
-              name="operatorConfig.dockerfilePath"
-              id="operatorConfig.dockerfilePath"
-              key="operatorConfig.dockerfilePath"
-              value={configContext.config.buildSettings?.operatorConfig?.dockerfilePath || ''}
+              name="operatorSettings.package"
+              id="operatorSettings.package"
+              value={context.config.buildSettings?.operatorSettings?.package}
               onChange={handleChange}
             />
           </FormGroup>
           <FormGroup
-            label="Base directory for the bundle image build, defaulting to the root of the source tree, defaulting to ."
-            fieldId="operatorConfig.contextDir">
+            label="Bundle channel."
+            fieldId="operatorSettings.channel"
+            isRequired>
             <TextInput
-              name="operatorConfig.contextDir"
-              id="operatorConfig.contextDir"
-              key="operatorConfig.contextDir"
-              value={configContext.config.buildSettings?.operatorConfig?.contextDir || ''}
+              name="operatorSettings.channel"
+              id="operatorSettings.channel"
+              value={context.config.buildSettings?.operatorSettings?.channel}
               onChange={handleChange}
             />
           </FormGroup>
           <FormGroup
-            label="The base index to add the bundle to. If set, image must be specified in base_images or images. If unspecified, the bundle will be added to an empty index. Requires as to be set."
-            fieldId="operatorConfig.baseIndex">
+            label="Bundle Install Namespace."
+            fieldId="operatorSettings.installNamespace"
+            isRequired>
             <TextInput
-              name="operatorConfig.baseIndex"
-              id="operatorConfig.baseIndex"
-              key="operatorConfig.baseIndex"
-              value={configContext.config.buildSettings?.operatorConfig?.baseIndex || ''}
+              name="operatorSettings.installNamespace"
+              id="operatorSettings.installNamespace"
+              value={context.config.buildSettings?.operatorSettings?.installNamespace}
               onChange={handleChange}
             />
           </FormGroup>
           <FormGroup
-            label="The update mode to use when adding the bundle to the base_index. Can be: semver, semver-skippatch, or replaces (default: semver). Requires base_index to be set."
-            fieldId="operatorConfig.targetNamespaces">
-            <Select
-              name="operatorConfig.targetNamespaces"
-              id="operatorConfig.targetNamespaces"
-              key="operatorConfig.targetNamespaces"
-              value={configContext.config.buildSettings?.operatorConfig?.updateGraph}
-              variant={SelectVariant.single}
-              isOpen={updateGraphTypeOpen}
-              onToggle={toggleUpdateGraphType}
-              onSelect={changeUpdateGraphType}
-              selections={configContext.config.buildSettings?.operatorConfig?.updateGraph}>
-              {Object.keys(UpdateGraphType).filter(k => isNaN(Number(k))).map((val, index) => (
-                <SelectOption
-                  key={index}
-                  value={val}
-                />
-              ))}
-            </Select>
+            label="Bundle target namespaces."
+            fieldId="operatorSettings.targetNamespaces"
+            isRequired>
+            <TextInput
+              name="operatorSettings.targetNamespaces"
+              id="operatorSettings.targetNamespaces"
+              value={context.config.buildSettings?.operatorSettings?.targetNamespaces}
+              onChange={handleChange}
+            />
           </FormGroup>
-          <br/>
-          <br/>
-          <PullspecSubstitutions/>
         </React.Fragment>
-      );
+      )
     } else {
-      return <React.Fragment/>
+      return (
+        <React.Fragment/>
+      )
     }
   }
 
   return (
     <React.Fragment>
-      <Card>
-        <CardTitle>General Build Options</CardTitle>
-        <CardBody>
-          <ErrorMessage messages={context.step.errorMessages}/>
-          <Checkbox
-            isChecked={configContext.config.buildSettings?.buildPromotes}
-            name="buildPromotes"
-            label="Does the repository build and promote container images?"
-            id="buildPromotes"
-            key="buildPromotes"
-            onChange={handleChange}
-          />
-          {NestedBuildOptions()}
-          {CompileOptions()}
-        </CardBody>
-      </Card>
-      <BaseImages/>
-      {OperatorOptions()}
+      <Checkbox
+        isChecked={context.config.buildSettings?.buildPromotes}
+        name="buildPromotes"
+        label="Does the repository build and promote container images?"
+        id="buildPromotes"
+        value="buildPromotes"
+        onChange={handleChange}
+      />
+      {renderNestedBuildOptions()}
+      {renderCompileOptions()}
+      <Checkbox
+        isChecked={context.config.buildSettings?.operatorSettings?.isOperator}
+        name="operatorSettings.isOperator"
+        label="This is an optional operator build."
+        id="operatorSettings.isOperator"
+        value="isOperator"
+        onChange={handleChange}
+      />
+      {renderOperatorOptions()}
     </React.Fragment>
   );
 }

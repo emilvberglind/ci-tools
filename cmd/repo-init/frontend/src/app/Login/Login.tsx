@@ -1,76 +1,61 @@
 import React, {useContext, useEffect, useState} from "react";
-import {AuthContext, ghAuthState} from "@app/types";
+import {AuthContext, initialState} from "@app/types";
 import {GithubIcon} from "@patternfly/react-icons";
 import Styled from "styled-components";
-import {Redirect, useHistory} from "react-router-dom";
 
 const Login: React.FunctionComponent = () => {
   const authContext = useContext(AuthContext)
-  const history = useHistory();
   const [data, setData] = useState({isLoading: false, errorMessage: ""})
 
-
   useEffect(() => {
-    if (authContext.userData.isAuthenticated) {
-      history.push('/repo-init');
-    } else {
-      // After requesting Github access, Github redirects back to your app with a code parameter
-      const url = window.location.href;
-      const hasCode = url.includes("?code=");
+    // After requesting Github access, Github redirects back to your app with a code parameter
+    const url = window.location.href;
+    const hasCode = url.includes("?code=");
 
-      // If Github API returns the code parameter
-      if (hasCode) {
-        const newUrl = url.split("?code=");
-        window.history.pushState({}, "", newUrl[0]);
-        setData({...data, isLoading: true, errorMessage: ""});
+    // If Github API returns the code parameter
+    if (hasCode) {
+      const newUrl = url.split("?code=");
+      window.history.pushState({}, "", newUrl[0]);
+      setData({ ...data, isLoading: true, errorMessage: "" });
 
-        const code = newUrl[1];
+      const code = newUrl[1];
 
-        const requestData = new FormData();
-        requestData.append("client_id", ghAuthState.client_id!);
-        requestData.append("client_secret", ghAuthState.client_secret!);
-        requestData.append("code", code);
-        requestData.append("redirect_uri", ghAuthState.redirect_uri!);
+      const requestData = new FormData();
+      requestData.append("client_id", initialState.client_id);
+      requestData.append("client_secret", initialState.client_secret);
+      requestData.append("code", code);
+      requestData.append("redirect_uri", initialState.redirect_uri);
 
-        // Request to exchange code for an access token
-        let access_token;
-        fetch(process.env.GITHUB_OAUTH_URI + `/access_token`, {
-          method: "POST",
-          body: requestData,
+      // Request to exchange code for an access token
+      fetch(`https://thingproxy.freeboard.io/fetch/https://github.com/login/oauth/access_token`, {
+        method: "POST",
+        body: requestData,
+      })
+        .then((response) => response.text())
+        .then((paramsString) => {
+          let params = new URLSearchParams(paramsString);
+          const access_token = params.get("access_token");
+          console.log(access_token);
+          authContext.updateContext({...authContext.userData, isAuthenticated: true, token: access_token});
+
+          // Request to return data of a user that has been authenticated
+          // return fetch(`https://thingproxy.freeboard.io/fetch/https://api.github.com/user`, {
+          //   headers: {
+          //     Authorization: `token ${access_token}`,
+          //   },
+          // });
         })
-          .then((response) => response.text())
-          .then((paramsString) => {
-            let params = new URLSearchParams(paramsString);
-            access_token = params.get("access_token");
-
-            // Request to return data of a user that has been authenticated
-            return fetch(process.env.GITHUB_API_URI  + `/user`, {
-              headers: {
-                Authorization: `token ${access_token}`,
-              },
-            });
-          })
-          .then((response) => response.json())
-          .then((response) => {
-            authContext.updateContext({
-              ...authContext.userData,
-              isAuthenticated: true,
-              userName: response.login,
-              token: access_token
-            });
-            history.push('/repo-init');
-            setData({
-              isLoading: false,
-              errorMessage: ""
-            })
-          })
-          .catch((error) => {
-            setData({
-              isLoading: false,
-              errorMessage: "Sorry! Login failed"
-            });
+        // .then((response) => response.json())
+        // .then((response) => {
+        //   console.log(response);
+        //   authContext.updateContext({...authContext.userData, isAuthenticated: true, user: response});
+        // })
+        .catch((error) => {
+          setData({
+            isLoading: false,
+            errorMessage: "Sorry! Login failed"
           });
-      }
+        });
     }
   }, [data]);
 
@@ -87,16 +72,16 @@ const Login: React.FunctionComponent = () => {
                 <div className="loader"/>
               </div>
             ) : (
-              <a
-                className="login-link"
-                href={`https://github.com/login/oauth/authorize?scope=user,repo&client_id=${ghAuthState.client_id}&redirect_uri=${ghAuthState.redirect_uri}`}
-                onClick={() => {
-                  setData({...data, errorMessage: "", isLoading: true});
-                }}
-              >
-                <GithubIcon/>
-                <span>Login with GitHub</span>
-              </a>
+                <a
+                  className="login-link"
+                  href={`https://github.com/login/oauth/authorize?scope=user&client_id=${initialState.client_id}&redirect_uri=${initialState.redirect_uri}`}
+                  onClick={() => {
+                    setData({ ...data, errorMessage: "" });
+                  }}
+                >
+                  <GithubIcon />
+                  <span>Login with GitHub</span>
+                </a>
             )}
           </div>
         </div>

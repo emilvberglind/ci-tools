@@ -3,10 +3,8 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const CopyPlugin = require('copy-webpack-plugin');
 const TsconfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
 const Dotenv = require('dotenv-webpack');
-const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
 const BG_IMAGES_DIRNAME = 'bgimages';
 const ASSET_PATH = process.env.ASSET_PATH || '/';
-
 module.exports = env => {
 
   return {
@@ -33,8 +31,7 @@ module.exports = env => {
             path.resolve(__dirname, 'node_modules/@patternfly/react-core/dist/styles/assets/fonts'),
             path.resolve(__dirname, 'node_modules/@patternfly/react-core/dist/styles/assets/pficon'),
             path.resolve(__dirname, 'node_modules/@patternfly/patternfly/assets/fonts'),
-            path.resolve(__dirname, 'node_modules/@patternfly/patternfly/assets/pficon'),
-            path.resolve(__dirname, 'node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon')
+            path.resolve(__dirname, 'node_modules/@patternfly/patternfly/assets/pficon')
           ],
           use: {
             loader: 'file-loader',
@@ -95,8 +92,7 @@ module.exports = env => {
             path.resolve(__dirname, 'node_modules/@patternfly/react-core/dist/styles/assets/images'),
             path.resolve(__dirname, 'node_modules/@patternfly/react-core/node_modules/@patternfly/react-styles/css/assets/images'),
             path.resolve(__dirname, 'node_modules/@patternfly/react-table/node_modules/@patternfly/react-styles/css/assets/images'),
-            path.resolve(__dirname, 'node_modules/@patternfly/react-inline-edit-extension/node_modules/@patternfly/react-styles/css/assets/images'),
-            path.resolve(__dirname, 'node_modules/@patternfly/react-code-editor/node_modules/@patternfly/react-styles/css/assets/images')
+            path.resolve(__dirname, 'node_modules/@patternfly/react-inline-edit-extension/node_modules/@patternfly/react-styles/css/assets/images')
           ],
           use: [
             {
@@ -120,17 +116,13 @@ module.exports = env => {
       new HtmlWebpackPlugin({
         template: path.resolve(__dirname, 'src', 'index.html')
       }),
-      new MonacoWebpackPlugin({
-        // available options are documented at https://github.com/Microsoft/monaco-editor-webpack-plugin#options
-        languages: ['yaml']
-      }),
       new Dotenv({
         systemvars: true,
         silent: true
       }),
       new CopyPlugin({
         patterns: [
-          {from: './src/favicon.png', to: 'images'},
+          { from: './src/favicon.png', to: 'images' },
         ]
       })
     ],
