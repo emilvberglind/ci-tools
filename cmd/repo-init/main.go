@@ -11,18 +11,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/spf13/afero"
 	"io/ioutil"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/test-infra/prow/flagutil"
+	"k8s.io/test-infra/prow/interrupts"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
 
-	"github.com/spf13/afero"
-
-	"k8s.io/apimachinery/pkg/util/sets"
 	prowconfig "k8s.io/test-infra/prow/config"
-	"k8s.io/test-infra/prow/interrupts"
 	"k8s.io/test-infra/prow/plugins"
 	"sigs.k8s.io/yaml"
 
@@ -32,8 +32,11 @@ import (
 )
 
 type options struct {
-	releaseRepo string
-	config      string
+	releaseRepo   string
+	config        string
+	registryPath  string
+	runServer     bool
+	GitHubOptions flagutil.GitHubOptions
 }
 
 func (o *options) Validate() error {
@@ -48,6 +51,9 @@ func gatherOptions() options {
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	fs.StringVar(&o.releaseRepo, "release-repo", "", "Path to the root of the openshift/release repository.")
 	fs.StringVar(&o.config, "config", "", "JSON configuration to use instead of the interactive mode.")
+	fs.StringVar(&o.registryPath, "registry", "", "Path to the step registry directory")
+	fs.BoolVar(&o.runServer, "run-server", false, "Whether to run the repo initializer as a standalone server.")
+	o.GitHubOptions.AddFlags(fs)
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Printf("ERROR: could not parse input: %v", err)
 		os.Exit(1)
@@ -56,21 +62,22 @@ func gatherOptions() options {
 }
 
 type initConfig struct {
-	Org                   string    `json:"org"`
-	Repo                  string    `json:"repo"`
-	Branch                string    `json:"branch"`
-	CanonicalGoRepository string    `json:"canonical_go_repository"`
-	Promotes              bool      `json:"promotes"`
-	PromotesWithOpenShift bool      `json:"promotes_with_openshift"`
-	NeedsBase             bool      `json:"needs_base"`
-	NeedsOS               bool      `json:"needs_os"`
-	GoVersion             string    `json:"go_version"`
-	BuildCommands         string    `json:"build_commands"`
-	TestBuildCommands     string    `json:"test_build_commands"`
-	Tests                 []test    `json:"tests"`
-	CustomE2E             []e2eTest `json:"custom_e2e"`
-	ReleaseType           string    `json:"release_type"`
-	ReleaseVersion        string    `json:"release_version"`
+	Org                   string          `json:"org"`
+	Repo                  string          `json:"repo"`
+	Branch                string          `json:"branch"`
+	CanonicalGoRepository string          `json:"canonical_go_repository"`
+	Promotes              bool            `json:"promotes"`
+	PromotesWithOpenShift bool            `json:"promotes_with_openshift"`
+	NeedsBase             bool            `json:"needs_base"`
+	NeedsOS               bool            `json:"needs_os"`
+	GoVersion             string          `json:"go_version"`
+	BuildCommands         string          `json:"build_commands"`
+	TestBuildCommands     string          `json:"test_build_commands"`
+	Tests                 []test          `json:"tests"`
+	CustomE2E             []e2eTest       `json:"custom_e2e"`
+	ReleaseType           string          `json:"release_type"`
+	ReleaseVersion        string          `json:"release_version"`
+	OperatorBundle        *operatorBundle `json:"operator_bundle"`
 }
 
 type test struct {
@@ -80,66 +87,85 @@ type test struct {
 }
 
 type e2eTest struct {
-	As      string             `json:"as"`
-	Profile api.ClusterProfile `json:"profile"`
-	Command string             `json:"command"`
-	Cli     bool               `json:"cli"`
+	As        string                    `json:"as"`
+	Profile   api.ClusterProfile        `json:"profile"`
+	Command   string                    `json:"command"`
+	Cli       bool                      `json:"cli"`
+	Resources *api.ResourceRequirements `json:"resources"`
+}
+
+type operatorBundle struct {
+	Name             string                     `json:"name"`
+	DockerfilePath   string                     `json:"dockerfile_path"`
+	ContextDir       string                     `json:"context_dir"`
+	BaseIndex        string                     `json:"base_index"`
+	UpdateGraph      string                     `json:"update_graph"`
+	PackageName      string                     `json:"package_name"`
+	Channel          string                     `json:"channel"`
+	InstallNamespace string                     `json:"install_namespace"`
+	TargetNamespaces string                     `json:"target_namespaces"`
+	Substitutions    []api.PullSpecSubstitution `json:"substitutions"`
 }
 
 func main() {
 	o := gatherOptions()
+
 	if err := o.Validate(); err != nil {
-		errorExit(fmt.Sprintf("invalid options: %v", err))
+		errorExit(fmt.Sprintf("Aw shit %v", err))
 	}
 
-	go func() {
+	if o.runServer {
+		serveUI(8080, 8081, o.releaseRepo, o.registryPath, o.GitHubOptions)
 		interrupts.WaitForGracefulShutdown()
-		os.Exit(1)
-	}()
-
-	fmt.Println(`Welcome to the repository configuration initializer.
-In order to generate a new set of configurations, some information will be necessary.`)
-	var config initConfig
-	if o.config != "" {
-		fmt.Println("Loading configuration from flags ...")
-		if err := json.Unmarshal([]byte(o.config), &config); err != nil {
-			errorExit(fmt.Sprintf("could not unmarshal provided configuration: %v", err))
-		}
 	} else {
-		fmt.Println(`
+		go func() {
+			interrupts.WaitForGracefulShutdown()
+			os.Exit(1)
+		}()
+
+		fmt.Println(`Welcome to the repository configuration initializer.
+In order to generate a new set of configurations, some information will be necessary.`)
+		var config initConfig
+		if o.config != "" {
+			fmt.Println("Loading configuration from flags ...")
+			if err := json.Unmarshal([]byte(o.config), &config); err != nil {
+				errorExit(fmt.Sprintf("could not unmarshal provided configuration: %v", err))
+			}
+		} else {
+			fmt.Println(`
 Let's start with general information about the repository...`)
-		config.Org = fetchWithPrompt("Enter the organization for the repository:")
-		config.Repo = fetchWithPrompt("Enter the repository to initialize:")
-		config.Branch = fetchOrDefaultWithPrompt("Enter the development branch for the repository:", "master")
+			config.Org = fetchWithPrompt("Enter the organization for the repository:")
+			config.Repo = fetchWithPrompt("Enter the repository to initialize:")
+			config.Branch = fetchOrDefaultWithPrompt("Enter the development branch for the repository:", "master")
 
-		configPath := path.Join(o.releaseRepo, "ci-operator", "config", config.Org, config.Repo)
-		if _, err := os.Stat(configPath); err == nil {
-			errorExit(fmt.Sprintf("configuration for %s/%s already exists at %s", config.Org, config.Repo, configPath))
-		}
+			configPath := path.Join(o.releaseRepo, "ci-operator", "config", config.Org, config.Repo)
+			if _, err := os.Stat(configPath); err == nil {
+				errorExit(fmt.Sprintf("configuration for %s/%s already exists at %s", config.Org, config.Repo, configPath))
+			}
 
-		fmt.Println(`
+			fmt.Println(`
 Now, let's determine how the repository builds output artifacts...`)
-		config.Promotes = fetchBoolWithPrompt("Does the repository build and promote container images? ")
-		if config.Promotes {
-			config.PromotesWithOpenShift = fetchBoolWithPrompt("Does the repository promote images as part of the OpenShift release? ")
-			config.NeedsBase = fetchBoolWithPrompt("Do any images build on top of the OpenShift base image? ")
-			config.NeedsOS = fetchBoolWithPrompt("Do any images build on top of the CentOS base image? ")
-		}
+			config.Promotes = fetchBoolWithPrompt("Does the repository build and promote container images? ")
+			if config.Promotes {
+				config.PromotesWithOpenShift = fetchBoolWithPrompt("Does the repository promote images as part of the OpenShift release? ")
+				config.NeedsBase = fetchBoolWithPrompt("Do any images build on top of the OpenShift base image? ")
+				config.NeedsOS = fetchBoolWithPrompt("Do any images build on top of the CentOS base image? ")
+			}
 
-		fmt.Println(`
+			fmt.Println(`
 Now, let's configure how the repository is compiled...`)
-		config.GoVersion = fetchOrDefaultWithPrompt("What version of Go does the repository build with?", "1.13")
-		config.CanonicalGoRepository = fetchOrDefaultWithPrompt("[OPTIONAL] Enter the Go import path for the repository if it uses a vanity URL (e.g. \"k8s.io/my-repo\"):", "")
-		config.BuildCommands = fetchOrDefaultWithPrompt("[OPTIONAL] What commands are used to build binaries in the repository? (e.g. \"go install ./cmd/...\")", "")
-		config.TestBuildCommands = fetchOrDefaultWithPrompt("[OPTIONAL] What commands are used to build test binaries? (e.g. \"go install -race ./cmd/...\" or \"go test -c ./test/...\")", "")
+			config.GoVersion = fetchOrDefaultWithPrompt("What version of Go does the repository build with?", "1.13")
+			config.CanonicalGoRepository = fetchOrDefaultWithPrompt("[OPTIONAL] Enter the Go import path for the repository if it uses a vanity URL (e.g. \"k8s.io/my-repo\"):", "")
+			config.BuildCommands = fetchOrDefaultWithPrompt("[OPTIONAL] What commands are used to build binaries in the repository? (e.g. \"go install ./cmd/...\")", "")
+			config.TestBuildCommands = fetchOrDefaultWithPrompt("[OPTIONAL] What commands are used to build test binaries? (e.g. \"go install -race ./cmd/...\" or \"go test -c ./test/...\")", "")
 
-		fmt.Println(`
+			fmt.Println(`
 Now, let's configure test jobs for the repository...`)
-		names := sets.NewString()
-		var tests []test
-		for {
-			more := ""
-			detail := `
+			names := sets.NewString()
+			var tests []test
+			for {
+				more := ""
+				detail := `
 First, we will configure simple test scripts. Test scripts
 execute unit or integration style tests by running a command
 from your repository inside of a test container. For example,
@@ -147,49 +173,49 @@ a unit test may be executed by running "make test-unit" after
 checking out the code under test.
 
 `
-			if len(tests) > 0 {
-				more = "more "
-				detail = ""
-			}
-			if !fetchBoolWithPrompt(fmt.Sprintf("%sAre there any %stest scripts to configure? ", detail, more)) {
-				break
-			}
-			var test test
-			test.As = fetchWithPrompt("What is the name of this test (e.g. \"unit\")? ")
-			for {
-				if names.Has(test.As) {
-					fmt.Printf(`
-A test named %s already exists. Please choose a different name.\n`, test.As)
-					test.As = fetchWithPrompt("What is the name of this test (e.g. \"unit\")? ")
-				} else {
-					names.Insert(test.As)
+				if len(tests) > 0 {
+					more = "more "
+					detail = ""
+				}
+				if !fetchBoolWithPrompt(fmt.Sprintf("%sAre there any %stest scripts to configure? ", detail, more)) {
 					break
 				}
+				var test test
+				test.As = fetchWithPrompt("What is the name of this test (e.g. \"unit\")? ")
+				for {
+					if names.Has(test.As) {
+						fmt.Printf(`
+A test named %s already exists. Please choose a different name.\n`, test.As)
+						test.As = fetchWithPrompt("What is the name of this test (e.g. \"unit\")? ")
+					} else {
+						names.Insert(test.As)
+						break
+					}
+				}
+				var usesBinaries, usesTestBinaries bool
+				if config.BuildCommands != "" {
+					usesBinaries = fetchBoolWithPrompt("Does this test require built binaries? ")
+				}
+				if config.TestBuildCommands != "" && !usesBinaries {
+					usesTestBinaries = fetchBoolWithPrompt("Does this test require test binaries? ")
+				}
+				switch {
+				case !usesBinaries && !usesTestBinaries:
+					test.From = api.PipelineImageStreamTagReferenceSource
+				case usesBinaries:
+					test.From = api.PipelineImageStreamTagReferenceBinaries
+				case usesTestBinaries:
+					test.From = api.PipelineImageStreamTagReferenceTestBinaries
+				}
+				test.Command = fetchWithPrompt("What commands in the repository run the test (e.g. \"make test-unit\")? ")
+				tests = append(tests, test)
 			}
-			var usesBinaries, usesTestBinaries bool
-			if config.BuildCommands != "" {
-				usesBinaries = fetchBoolWithPrompt("Does this test require built binaries? ")
-			}
-			if config.TestBuildCommands != "" && !usesBinaries {
-				usesTestBinaries = fetchBoolWithPrompt("Does this test require test binaries? ")
-			}
-			switch {
-			case !usesBinaries && !usesTestBinaries:
-				test.From = api.PipelineImageStreamTagReferenceSource
-			case usesBinaries:
-				test.From = api.PipelineImageStreamTagReferenceBinaries
-			case usesTestBinaries:
-				test.From = api.PipelineImageStreamTagReferenceTestBinaries
-			}
-			test.Command = fetchWithPrompt("What commands in the repository run the test (e.g. \"make test-unit\")? ")
-			tests = append(tests, test)
-		}
-		config.Tests = tests
+			config.Tests = tests
 
-		var e2eTests []e2eTest
-		for {
-			more := ""
-			detail := `
+			var e2eTests []e2eTest
+			for {
+				more := ""
+				detail := `
 Next, we will configure end-to-end tests. An end-to-end test
 executes a command from your repository against an ephemeral
 OpenShift cluster. The test script will have "cluster:admin"
@@ -197,66 +223,66 @@ credentials with which it can execute no other tests will
 share the cluster.
 
 `
-			if len(e2eTests) > 0 {
-				more = "more "
-				detail = ""
-			}
-			if !fetchBoolWithPrompt(fmt.Sprintf("%sAre there any %send-to-end test scripts to configure? ", detail, more)) {
-				break
-			}
-			var test e2eTest
-			test.As = fetchWithPrompt("What is the name of this test (e.g. \"e2e-operator\")? ")
-			for {
-				if names.Has(test.As) {
-					fmt.Printf(`
+				if len(e2eTests) > 0 {
+					more = "more "
+					detail = ""
+				}
+				if !fetchBoolWithPrompt(fmt.Sprintf("%sAre there any %send-to-end test scripts to configure? ", detail, more)) {
+					break
+				}
+				var test e2eTest
+				test.As = fetchWithPrompt("What is the name of this test (e.g. \"e2e-operator\")? ")
+				for {
+					if names.Has(test.As) {
+						fmt.Printf(`
 A test named %s already exists. Please choose a different name.\n`, test.As)
-					test.As = fetchWithPrompt("What is the name of this test (e.g. \"e2e-operator\")? ")
-				} else {
-					names.Insert(test.As)
-					break
+						test.As = fetchWithPrompt("What is the name of this test (e.g. \"e2e-operator\")? ")
+					} else {
+						names.Insert(test.As)
+						break
+					}
 				}
+
+				clusterProfiles := sets.NewString("gcp", "aws", "azure")
+				test.Profile = api.ClusterProfile(fetchOrDefaultWithPrompt("Which specific cloud provider does the test require, if any? ", string(api.ClusterProfileAWS)))
+				for {
+					if !clusterProfiles.Has(string(test.Profile)) {
+						fmt.Printf("Cluster profile %s is not valid. Please choose one from: %s.\n", test.Profile, strings.Join(clusterProfiles.List(), ", "))
+						test.Profile = api.ClusterProfile(fetchOrDefaultWithPrompt("Which specific cloud provider does the test require, if any? ", string(api.ClusterProfileAWS)))
+					} else {
+						break
+					}
+				}
+				test.Command = fetchWithPrompt("What commands in the repository run the test (e.g. \"make test-e2e\")? ")
+				test.Cli = fetchBoolWithPrompt("Does your test require the OpenShift client (oc)? ")
+
+				e2eTests = append(e2eTests, test)
 			}
 
-			clusterProfiles := sets.NewString("gcp", "aws", "azure")
-			test.Profile = api.ClusterProfile(fetchOrDefaultWithPrompt("Which specific cloud provider does the test require, if any? ", string(api.ClusterProfileAWS)))
-			for {
-				if !clusterProfiles.Has(string(test.Profile)) {
-					fmt.Printf("Cluster profile %s is not valid. Please choose one from: %s.\n", test.Profile, strings.Join(clusterProfiles.List(), ", "))
-					test.Profile = api.ClusterProfile(fetchOrDefaultWithPrompt("Which specific cloud provider does the test require, if any? ", string(api.ClusterProfileAWS)))
-				} else {
-					break
-				}
-			}
-			test.Command = fetchWithPrompt("What commands in the repository run the test (e.g. \"make test-e2e\")? ")
-			test.Cli = fetchBoolWithPrompt("Does your test require the OpenShift client (oc)? ")
-
-			e2eTests = append(e2eTests, test)
-		}
-
-		config.CustomE2E = e2eTests
-		if len(config.CustomE2E) > 0 && !config.Promotes {
-			valid := sets.NewString("nightly", "published")
-			validFormatted := strings.Join(valid.List(), ", ")
-			releaseType := fetchWithPrompt(fmt.Sprintf("What type of OpenShift release do the end-to-end tests run on top of? [%s]", validFormatted))
-			for {
-				if !valid.Has(releaseType) {
-					fmt.Printf(`
+			config.CustomE2E = e2eTests
+			if len(config.CustomE2E) > 0 && !config.Promotes {
+				valid := sets.NewString("nightly", "published")
+				validFormatted := strings.Join(valid.List(), ", ")
+				releaseType := fetchWithPrompt(fmt.Sprintf("What type of OpenShift release do the end-to-end tests run on top of? [%s]", validFormatted))
+				for {
+					if !valid.Has(releaseType) {
+						fmt.Printf(`
 Unexpected release type %q. Please choose one from: [%v].\n`, releaseType, validFormatted)
-					releaseType = fetchWithPrompt(fmt.Sprintf("What type of OpenShift release do the end-to-end tests run on top of? [%s]", validFormatted))
-				} else {
-					break
+						releaseType = fetchWithPrompt(fmt.Sprintf("What type of OpenShift release do the end-to-end tests run on top of? [%s]", validFormatted))
+					} else {
+						break
+					}
 				}
+				config.ReleaseType = releaseType
+				config.ReleaseVersion = fetchOrDefaultWithPrompt("Which OpenShift version is being tested? ", "4.6")
 			}
-			config.ReleaseType = releaseType
-			config.ReleaseVersion = fetchOrDefaultWithPrompt("Which OpenShift version is being tested? ", "4.6")
 		}
-	}
 
-	marshalled, err := json.Marshal(&config)
-	if err != nil {
-		errorExit(fmt.Sprintf("could not marshal configuration: %v", err))
-	}
-	fmt.Printf(`
+		marshalled, err := json.Marshal(&config)
+		if err != nil {
+			errorExit(fmt.Sprintf("could not marshal configuration: %v", err))
+		}
+		fmt.Printf(`
 Repository configuration options loaded!
 In case of any errors, use the following command to re-
 create this run without using the interactive interface:
@@ -264,16 +290,17 @@ create this run without using the interactive interface:
 %s --config=%q
 `, strings.Join(os.Args, " "), string(marshalled))
 
-	if err := updateProwConfig(config, o.releaseRepo); err != nil {
-		errorExit(fmt.Sprintf("could not update Prow configuration: %v", err))
-	}
+		if err := updateProwConfig(config, o.releaseRepo); err != nil {
+			errorExit(fmt.Sprintf("could not update Prow configuration: %v", err))
+		}
 
-	if err := updatePluginConfig(config, o.releaseRepo); err != nil {
-		errorExit(fmt.Sprintf("could not update Prow plugin configuration: %v", err))
-	}
+		if err := updatePluginConfig(config, o.releaseRepo); err != nil {
+			errorExit(fmt.Sprintf("could not update Prow plugin configuration: %v", err))
+		}
 
-	if err := createCIOperatorConfig(config, o.releaseRepo); err != nil {
-		errorExit(fmt.Sprintf("could not generate new CI Operator configuration: %v", err))
+		if err := createCIOperatorConfig(config, o.releaseRepo); err != nil {
+			errorExit(fmt.Sprintf("could not generate new CI Operator configuration: %v", err))
+		}
 	}
 }
 
@@ -573,6 +600,18 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 		},
 	}
 
+	if config.OperatorBundle != nil {
+		operatorConfig := api.OperatorStepConfiguration{}
+		generated.Configuration.Operator = &operatorConfig
+		if config.OperatorBundle.Name != "" {
+			operatorConfig.Bundles = []api.Bundle{
+				{
+					As: config.OperatorBundle.Name,
+				},
+			}
+		}
+	}
+
 	for _, test := range config.Tests {
 		generated.Configuration.Tests = append(generated.Configuration.Tests, api.TestStepConfiguration{
 			As:       test.As,
@@ -595,7 +634,7 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 							As:        test.As,
 							Commands:  test.Command,
 							From:      "src",
-							Resources: api.ResourceRequirements{Requests: map[string]string{"cpu": "100m"}},
+							Resources: getTestResourceRequest(test),
 						},
 					},
 				},
@@ -629,6 +668,13 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 		generated.Configuration.Releases = map[string]api.UnresolvedRelease{api.LatestReleaseName: release}
 	}
 	return generated
+}
+
+func getTestResourceRequest(test e2eTest) api.ResourceRequirements {
+	if test.Resources != nil {
+		return *test.Resources
+	}
+	return api.ResourceRequirements{Requests: map[string]string{"cpu": "100m"}}
 }
 
 func determineWorkflowFromClusterPorfile(clusterProfile api.ClusterProfile) *string {
