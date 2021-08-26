@@ -1,0 +1,1313 @@
+releases:
+  latest:
+    candidate:
+      architecture: amd64
+      product: ocp
+      stream: nightly
+      version: "4.8"
+resources:
+  '*':
+    limits:
+      memory: 4Gi
+    requests:
+      cpu: 100m
+      memory: 200Mi
+tests:
+- as: cvp-common-aws
+  cron: '@yearly'
+  literal_steps:
+    cluster_profile: aws-cpaas
+    dependency_overrides:
+      BUNDLE_IMAGE: brew.registry.redhat.io/rh-osbs-stage/e2e-e2e-test-operator-bundle-container:8.0-3
+      OO_INDEX: brew.registry.redhat.io/rh-osbs-stage/iib:23576
+    post:
+    - as: gather-aws-console
+      commands: "#!/bin/bash\n\nset -o nounset\nset -o errexit\nset -o pipefail\n\ntrap
+        'CHILDREN=$(jobs -p); if test -n \"${CHILDREN}\"; then kill ${CHILDREN} &&
+        wait; fi' TERM\n\nexport AWS_SHARED_CREDENTIALS_FILE=\"${CLUSTER_PROFILE_DIR}/.awscred\"\n\nif
+        test ! -f \"${SHARED_DIR}/metadata.json\"\nthen\n\techo \"No metadata.json,
+        so unknown AWS region, so unable to gathering console logs.\"\n\texit 0\nfi\n\nif
+        test -f \"${KUBECONFIG}\"\nthen\n\toc --request-timeout=5s get nodes -o jsonpath
+        --template '{range .items[*]}{.spec.providerID}{\"\\n\"}{end}' | sed 's|.*/||'
+        > \"${TMPDIR}/node-provider-IDs.txt\" &\n\twait \"$!\"\n\n\toc --request-timeout=5s
+        -n openshift-machine-api get machines -o jsonpath --template '{range .items[*]}{.spec.providerID}{\"\\n\"}{end}'
+        | sed 's|.*/||' >> \"${TMPDIR}/node-provider-IDs.txt\" &\n\twait \"$!\"\nelse\n\techo
+        \"No kubeconfig; skipping providerID extraction.\"\n\texit 0\nfi\n\nif test
+        -f \"${SHARED_DIR}/aws-instance-ids.txt\"\nthen\n\tcat \"${SHARED_DIR}/aws-instance-ids.txt\"
+        >> \"${TMPDIR}/node-provider-IDs.txt\"\nfi\n\nREGION=\"$(jq -r .aws.region
+        \"${SHARED_DIR}/metadata.json\")\"\ncat \"${TMPDIR}/node-provider-IDs.txt\"
+        | sort | uniq | while read -r INSTANCE_ID\ndo\n\techo \"Gathering console
+        logs for ${INSTANCE_ID}\"\n\taws --region \"${REGION}\" ec2 get-console-output
+        --instance-id \"${INSTANCE_ID}\" --output text > \"${ARTIFACT_DIR}/${INSTANCE_ID}\"
+        || echo \"Failed to gather console logs\"\ndone\n"
+      env:
+      - default: /tmp
+        documentation: A pathname of a directory made available for programs that
+          need a place to create temporary files.
+        name: TMPDIR
+      from_image:
+        name: "4.5"
+        namespace: ocp
+        tag: upi-installer
+      grace_period: 10m0s
+      optional_on_success: true
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: gather-must-gather
+      commands: "#!/bin/bash\n\nset -o nounset\nset -o errexit\nset -o pipefail\n\nif
+        test ! -f \"${KUBECONFIG}\"\nthen\n\techo \"No kubeconfig, so no point in
+        calling must-gather.\"\n\texit 0\nfi\n\n# For disconnected or otherwise unreachable
+        environments, we want to\n# have steps use an HTTP(S) proxy to reach the API
+        server. This proxy\n# configuration file should export HTTP_PROXY, HTTPS_PROXY,
+        and NO_PROXY\n# environment variables, as well as their lowercase equivalents
+        (note\n# that libcurl doesn't recognize the uppercase variables).\nif test
+        -f \"${SHARED_DIR}/proxy-conf.sh\"\nthen\n\t# shellcheck source=/dev/null\n\tsource
+        \"${SHARED_DIR}/proxy-conf.sh\"\nfi\n\n# Allow a job to override the must-gather
+        image, this is needed for\n# disconnected environments prior to 4.8.\nif test
+        -f \"${SHARED_DIR}/must-gather-image.sh\"\nthen\n\t# shellcheck source=/dev/null\n\tsource
+        \"${SHARED_DIR}/must-gather-image.sh\"\nelse\n\tMUST_GATHER_IMAGE=${MUST_GATHER_IMAGE:-\"\"}\nfi\n\necho
+        \"Running must-gather...\"\nmkdir -p ${ARTIFACT_DIR}/must-gather\noc --insecure-skip-tls-verify
+        adm must-gather $MUST_GATHER_IMAGE --dest-dir ${ARTIFACT_DIR}/must-gather
+        > ${ARTIFACT_DIR}/must-gather/must-gather.log\n[ -f \"${ARTIFACT_DIR}/must-gather/event-filter.html\"
+        ] && cp \"${ARTIFACT_DIR}/must-gather/event-filter.html\" \"${ARTIFACT_DIR}/event-filter.html\"\ntar
+        -czC \"${ARTIFACT_DIR}/must-gather\" -f \"${ARTIFACT_DIR}/must-gather.tar.gz\"
+        .\nrm -rf \"${ARTIFACT_DIR}\"/must-gather\n"
+      from: cli
+      optional_on_success: true
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: gather-extra
+      commands: "#!/bin/bash\nfunction queue() {\n  local TARGET=\"${1}\"\n  shift\n
+        \ local LIVE\n  LIVE=\"$(jobs | wc -l)\"\n  while [[ \"${LIVE}\" -ge 45 ]];
+        do\n    sleep 1\n    LIVE=\"$(jobs | wc -l)\"\n  done\n  echo \"${@}\"\n  if
+        [[ -n \"${FILTER:-}\" ]]; then\n    \"${@}\" | \"${FILTER}\" >\"${TARGET}\"
+        &\n  else\n    \"${@}\" >\"${TARGET}\" &\n  fi\n}\n\nexport PATH=$PATH:/tmp/shared\n\nif
+        test ! -f \"${KUBECONFIG}\"\nthen\n\techo \"No kubeconfig, so no point in
+        gathering extra artifacts.\"\n\texit 0\nfi\n\n# For disconnected or otherwise
+        unreachable environments, we want to\n# have steps use an HTTP(S) proxy to
+        reach the API server. This proxy\n# configuration file should export HTTP_PROXY,
+        HTTPS_PROXY, and NO_PROXY\n# environment variables, as well as their lowercase
+        equivalents (note\n# that libcurl doesn't recognize the uppercase variables).\nif
+        test -f \"${SHARED_DIR}/proxy-conf.sh\"\nthen\n\t# shellcheck source=/dev/null\n\tsource
+        \"${SHARED_DIR}/proxy-conf.sh\"\nfi\n\necho \"Gathering artifacts ...\"\nmkdir
+        -p ${ARTIFACT_DIR}/pods ${ARTIFACT_DIR}/nodes ${ARTIFACT_DIR}/metrics ${ARTIFACT_DIR}/bootstrap
+        ${ARTIFACT_DIR}/network ${ARTIFACT_DIR}/oc_cmds\n\noc --insecure-skip-tls-verify
+        --request-timeout=5s get nodes -o jsonpath --template '{range .items[*]}{.metadata.name}{\"\\n\"}{end}'
+        > /tmp/nodes\noc --insecure-skip-tls-verify --request-timeout=5s get pods
+        --all-namespaces --template '{{ range .items }}{{ $name := .metadata.name
+        }}{{ $ns := .metadata.namespace }}{{ range .spec.containers }}-n {{ $ns }}
+        {{ $name }} -c {{ .name }}{{ \"\\n\" }}{{ end }}{{ range .spec.initContainers
+        }}-n {{ $ns }} {{ $name }} -c {{ .name }}{{ \"\\n\" }}{{ end }}{{ end }}'
+        > /tmp/containers\noc --insecure-skip-tls-verify --request-timeout=5s get
+        pods -l openshift.io/component=api --all-namespaces --template '{{ range .items
+        }}-n {{ .metadata.namespace }} {{ .metadata.name }}{{ \"\\n\" }}{{ end }}'
+        > /tmp/pods-api\n\nqueue ${ARTIFACT_DIR}/config-resources.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get apiserver.config.openshift.io authentication.config.openshift.io
+        build.config.openshift.io console.config.openshift.io dns.config.openshift.io
+        featuregate.config.openshift.io image.config.openshift.io infrastructure.config.openshift.io
+        ingress.config.openshift.io network.config.openshift.io oauth.config.openshift.io
+        project.config.openshift.io scheduler.config.openshift.io -o json\nqueue ${ARTIFACT_DIR}/apiservices.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get apiservices -o json\nqueue
+        ${ARTIFACT_DIR}/oc_cmds/apiservices oc --insecure-skip-tls-verify --request-timeout=5s
+        get apiservices\nqueue ${ARTIFACT_DIR}/clusteroperators.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get clusteroperators -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/clusteroperators
+        oc --insecure-skip-tls-verify --request-timeout=5s get clusteroperators\nqueue
+        ${ARTIFACT_DIR}/clusterversion.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get clusterversion -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/clusterversion oc
+        --insecure-skip-tls-verify --request-timeout=5s get clusterversion\nqueue
+        ${ARTIFACT_DIR}/configmaps.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get configmaps --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/configmaps
+        oc --insecure-skip-tls-verify --request-timeout=5s get configmaps --all-namespaces\nqueue
+        ${ARTIFACT_DIR}/credentialsrequests.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get credentialsrequests --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/credentialsrequests
+        oc --insecure-skip-tls-verify --request-timeout=5s get credentialsrequests
+        --all-namespaces\nqueue ${ARTIFACT_DIR}/csr.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get csr -o json\nqueue ${ARTIFACT_DIR}/endpoints.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get endpoints --all-namespaces
+        -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/endpoints oc --insecure-skip-tls-verify
+        --request-timeout=5s get endpoints --all-namespaces\nFILTER=gzip queue ${ARTIFACT_DIR}/deployments.json.gz
+        oc --insecure-skip-tls-verify --request-timeout=5s get deployments --all-namespaces
+        -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/deployments oc --insecure-skip-tls-verify
+        --request-timeout=5s get deployments --all-namespaces -o wide\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/daemonsets.json.gz oc --insecure-skip-tls-verify --request-timeout=5s
+        get daemonsets --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/daemonsets
+        oc --insecure-skip-tls-verify --request-timeout=5s get daemonsets --all-namespaces
+        -o wide\nqueue ${ARTIFACT_DIR}/events.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get events --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/events
+        oc --insecure-skip-tls-verify --request-timeout=5s get events --all-namespaces\nqueue
+        ${ARTIFACT_DIR}/kubeapiserver.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get kubeapiserver -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/kubeapiserver oc
+        --insecure-skip-tls-verify --request-timeout=5s get kubeapiserver\nqueue ${ARTIFACT_DIR}/kubecontrollermanager.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get kubecontrollermanager
+        -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/kubecontrollermanager oc --insecure-skip-tls-verify
+        --request-timeout=5s get kubecontrollermanager\nqueue ${ARTIFACT_DIR}/machineconfigpools.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get machineconfigpools
+        -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/machineconfigpools oc --insecure-skip-tls-verify
+        --request-timeout=5s get machineconfigpools\nqueue ${ARTIFACT_DIR}/machineconfigs.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get machineconfigs -o json\nqueue
+        ${ARTIFACT_DIR}/oc_cmds/machineconfigs oc --insecure-skip-tls-verify --request-timeout=5s
+        get machineconfigs\nqueue ${ARTIFACT_DIR}/machinesets.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get machinesets -A -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/machinesets
+        oc --insecure-skip-tls-verify --request-timeout=5s get machinesets -A\nqueue
+        ${ARTIFACT_DIR}/machines.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get machines -A -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/machines oc --insecure-skip-tls-verify
+        --request-timeout=5s get machines -A -o wide\nqueue ${ARTIFACT_DIR}/namespaces.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get namespaces -o json\nqueue
+        ${ARTIFACT_DIR}/oc_cmds/namespaces oc --insecure-skip-tls-verify --request-timeout=5s
+        get namespaces\nqueue ${ARTIFACT_DIR}/nodes.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get nodes -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/nodes
+        oc --insecure-skip-tls-verify --request-timeout=5s get nodes -o wide\nqueue
+        ${ARTIFACT_DIR}/openshiftapiserver.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get openshiftapiserver -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/openshiftapiserver
+        oc --insecure-skip-tls-verify --request-timeout=5s get openshiftapiserver\nqueue
+        ${ARTIFACT_DIR}/pods.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get pods --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/pods oc --insecure-skip-tls-verify
+        --request-timeout=5s get pods --all-namespaces -o wide\nqueue ${ARTIFACT_DIR}/persistentvolumes.json
+        oc --insecure-skip-tls-verify --request-timeout=5s get persistentvolumes --all-namespaces
+        -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/persistentvolumes oc --insecure-skip-tls-verify
+        --request-timeout=5s get persistentvolumes --all-namespaces -o wide\nqueue
+        ${ARTIFACT_DIR}/persistentvolumeclaims.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get persistentvolumeclaims --all-namespaces -o json\nqueue
+        ${ARTIFACT_DIR}/oc_cmds/persistentvolumeclaims oc --insecure-skip-tls-verify
+        --request-timeout=5s get persistentvolumeclaims --all-namespaces -o wide\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/replicasets.json.gz oc --insecure-skip-tls-verify --request-timeout=5s
+        get replicasets --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/replicasets
+        oc --insecure-skip-tls-verify --request-timeout=5s get replicasets --all-namespaces
+        -o wide\nqueue ${ARTIFACT_DIR}/rolebindings.json oc --insecure-skip-tls-verify
+        --request-timeout=5s get rolebindings --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/rolebindings
+        oc --insecure-skip-tls-verify --request-timeout=5s get rolebindings --all-namespaces\nqueue
+        ${ARTIFACT_DIR}/roles.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get roles --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/roles oc
+        --insecure-skip-tls-verify --request-timeout=5s get roles --all-namespaces\nqueue
+        ${ARTIFACT_DIR}/services.json oc --insecure-skip-tls-verify --request-timeout=5s
+        get services --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/oc_cmds/services
+        oc --insecure-skip-tls-verify --request-timeout=5s get services --all-namespaces\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/statefulsets.json.gz oc --insecure-skip-tls-verify --request-timeout=5s
+        get statefulsets --all-namespaces -o json\nqueue ${ARTIFACT_DIR}/statefulsets
+        oc --insecure-skip-tls-verify --request-timeout=5s get statefulsets --all-namespaces\n\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/openapi.json.gz oc --insecure-skip-tls-verify --request-timeout=5s
+        get --raw /openapi/v2\n\n# gather nodes first in parallel since they may contain
+        the most relevant debugging info\nwhile IFS= read -r i; do\n  mkdir -p ${ARTIFACT_DIR}/nodes/$i\n
+        \ queue ${ARTIFACT_DIR}/nodes/$i/heap oc --insecure-skip-tls-verify get --request-timeout=20s
+        --raw /api/v1/nodes/$i/proxy/debug/pprof/heap\n  FILTER=gzip queue ${ARTIFACT_DIR}/nodes/$i/journal.gz
+        oc --insecure-skip-tls-verify adm node-logs $i --unify=false\n  FILTER=gzip
+        queue ${ARTIFACT_DIR}/nodes/$i/journal-previous.gz oc --insecure-skip-tls-verify
+        adm node-logs $i --unify=false --boot=-1\n  FILTER=gzip queue ${ARTIFACT_DIR}/nodes/$i/audit.gz
+        oc --insecure-skip-tls-verify adm node-logs $i --unify=false --path=audit/audit.log\ndone
+        < /tmp/nodes\n\n# Snapshot iptables-save on each node for debugging possible
+        kube-proxy issues\noc --insecure-skip-tls-verify get --request-timeout=20s
+        -n openshift-sdn -l app=sdn pods --template '{{ range .items }}{{ .metadata.name
+        }}{{ \"\\n\" }}{{ end }}' > /tmp/sdn-pods\nwhile IFS= read -r i; do\n  queue
+        ${ARTIFACT_DIR}/network/iptables-save-$i oc --insecure-skip-tls-verify rsh
+        --timeout=20 -n openshift-sdn -c sdn $i iptables-save -c\ndone < /tmp/sdn-pods\n\nwhile
+        IFS= read -r i; do\n  file=\"$( echo \"$i\" | cut -d ' ' -f 3 | tr -s ' '
+        '_' )\"\n  queue ${ARTIFACT_DIR}/metrics/${file}-heap oc --insecure-skip-tls-verify
+        exec $i -- /bin/bash -c 'oc --insecure-skip-tls-verify get --raw /debug/pprof/heap
+        --server \"https://$( hostname ):8443\" --config /etc/origin/master/admin.kubeconfig'\n
+        \ queue ${ARTIFACT_DIR}/metrics/${file}-controllers-heap oc --insecure-skip-tls-verify
+        exec $i -- /bin/bash -c 'oc --insecure-skip-tls-verify get --raw /debug/pprof/heap
+        --server \"https://$( hostname ):8444\" --config /etc/origin/master/admin.kubeconfig'\ndone
+        < /tmp/pods-api\n\nwhile IFS= read -r i; do\n  file=\"$( echo \"$i\" | cut
+        -d ' ' -f 2,3,5 | tr -s ' ' '_' )\"\n  FILTER=gzip queue ${ARTIFACT_DIR}/pods/${file}.log.gz
+        oc --insecure-skip-tls-verify logs --request-timeout=20s $i\n  FILTER=gzip
+        queue ${ARTIFACT_DIR}/pods/${file}_previous.log.gz oc --insecure-skip-tls-verify
+        logs --request-timeout=20s -p $i\ndone < /tmp/containers\n\necho \"Snapshotting
+        prometheus (may take 15s) ...\"\n# Use logs and data the \"last\" monitoring
+        pod in order to catch issues that occur when the first prometheus pod upgrades\nmonitoring_pod=\"$(
+        oc --insecure-skip-tls-verify get pods -n openshift-monitoring -o name | grep
+        prometheus-k8s- | tail -1 )\"\nqueue ${ARTIFACT_DIR}/metrics/prometheus.tar.gz
+        oc --insecure-skip-tls-verify exec -n openshift-monitoring \"${monitoring_pod}\"
+        -- tar cvzf - -C /prometheus .\n\ncat >> ${SHARED_DIR}/custom-links.txt <<
+        EOF\n<script>\nlet a = document.createElement('a');\na.href=\"https://promecieus.dptools.openshift.org/?search=\"+document.referrer;\na.innerHTML=\"PromeCIeus\";\ndocument.getElementById(\"wrapper\").append(a);\n</script>\nEOF\n\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/metrics/prometheus-target-metadata.json.gz oc --insecure-skip-tls-verify
+        exec -n openshift-monitoring \"${monitoring_pod}\" -- /bin/bash -c \"curl
+        -G http://localhost:9090/api/v1/targets/metadata --data-urlencode 'match_target={instance!=\\\"\\\"}'\"\nFILTER=gzip
+        queue ${ARTIFACT_DIR}/metrics/prometheus-config.json.gz oc --insecure-skip-tls-verify
+        exec -n openshift-monitoring \"${monitoring_pod}\" -- /bin/bash -c \"curl
+        -G http://localhost:9090/api/v1/status/config\"\nqueue ${ARTIFACT_DIR}/metrics/prometheus-tsdb-status.json
+        oc --insecure-skip-tls-verify exec -n openshift-monitoring \"${monitoring_pod}\"
+        -- /bin/bash -c \"curl -G http://localhost:9090/api/v1/status/tsdb\"\nqueue
+        ${ARTIFACT_DIR}/metrics/prometheus-runtimeinfo.json oc --insecure-skip-tls-verify
+        exec -n openshift-monitoring \"${monitoring_pod}\" -- /bin/bash -c \"curl
+        -G http://localhost:9090/api/v1/status/runtimeinfo\"\nqueue ${ARTIFACT_DIR}/metrics/prometheus-targets.json
+        oc --insecure-skip-tls-verify exec -n openshift-monitoring \"${monitoring_pod}\"
+        -- /bin/bash -c \"curl -G http://localhost:9090/api/v1/targets\"\n\n# Calculate
+        metrics suitable for apples-to-apples comparison across CI runs.\n# Load whatever
+        timestamps we can, generate the metrics script, and then send it to the\n#
+        thanos-querier pod on the cluster via exec (so we don't need to have a route
+        exposed).\necho \"Saving job metrics\"\ncat >/tmp/generate.sh <<'GENERATE'\n#!/bin/bash\n\nset
+        -o nounset\nset -o errexit\nset -o pipefail\n\n# CI job metrics extraction\n#\n#
+        This script gathers a number of important query metrics from the metrics\n#
+        stack in a cluster after tests are complete. It gathers metrics related to\n#
+        three phases - install, test, and overall (install start to test end).\n#\n#
+        Prometheus may not have data from early in an install, and some runs may\n#
+        result in outage to prometheus, so queries have to look at measurements\n#
+        that may have gaps or be incomplete.\n#\n# A metric belongs in this set if
+        it is useful in tracking a trend over time\n# in the behavior of the cluster
+        at install time or over the test run - for\n# instance, by looking at the
+        total CPU usage of the control plane, we can\n# perform apples to apples comparisons
+        between two cloud platforms and look\n# for places where we are inadequate.
+        The metrics are output to the artifacts\n# dir and then are processed by the
+        ci-search indexer cloud functions to be\n# visualized by ci-search.\n#\n#
+        The output of the script is a file with one JSON object per line consisting\n#
+        of:\n#\n# {\"<name_of_metric>\":<prometheus query result object>}\n#\n# The
+        prometheus query result object is described here:\n# https://prometheus.io/docs/prometheus/latest/querying/api/\n#\n#
+        Metrics are expected to return a scalar, a vector with a single entry and\n#
+        no labels, or a vector with a single label and a single entry.\n#\n# This
+        script outputs a script that is intended to be invoked against a local\n#
+        prometheus instance. In the CI environment we run this script inside the\n#
+        pod that contains the Thanos querier, but it can be used locally for testing\n#
+        against a prometheus instance running at localhost:9090.\n\n#########\n\n#
+        Take as arguments a set of env vars for the phases (install, test, all) that\n#
+        contain the unix timestamp of the start and end of the two main phases, then\n#
+        calculate what we can. If a phase is missing, that may mean the test script\n#
+        could not run to completion, in which case we will not define the variable\n#
+        and some metrics will not be calculated or output. Omitting a query if it\n#
+        can't be calculate is important, because the zero value may be meaningful.\n#\n#
+        - t_* is the unix timestamp at the end\n# - s_* is the number of seconds the
+        phase took\n# - d_* is a prometheus duration of the phase as \"<seconds>s\"\nt_now=$(date
+        +%s)\nif [[ -n \"${TEST_TIME_INSTALL_END-}\" ]]; then\n  t_install=${TEST_TIME_INSTALL_END}\n
+        \ if [[ -n \"${TEST_TIME_INSTALL_START-}\" ]]; then\n    s_install=\"$(( TEST_TIME_INSTALL_END
+        - TEST_TIME_INSTALL_START ))\"\n    d_install=\"${s_install}s\"\n  fi\nfi\nif
+        [[ -n \"${TEST_TIME_TEST_END-}\" ]]; then\n  t_test=${TEST_TIME_TEST_END}\n
+        \ if [[ -n \"${TEST_TIME_TEST_START-}\" ]]; then\n    s_test=\"$(( TEST_TIME_TEST_END
+        - TEST_TIME_TEST_START ))\"\n    d_test=\"${s_test}s\"\n  fi\nfi\n\nif [[
+        -n \"${TEST_TIME_TEST_START-}\" || \"${TEST_TIME_INSTALL_START-}\" ]]; then\n
+        \ t_start=${TEST_TIME_INSTALL_START:-${TEST_TIME_TEST_START}}\nfi\nt_all=${t_test:-${t_install:-${t_now}}}\nif
+        [[ -n \"${t_start-}\" ]]; then\n  s_all=\"$(( t_all - t_start ))\"\n  d_all=\"${s_all}s\"\nfi\n\n#
+        We process this query file one line at a time - if a variable is undefined
+        we'll skip the\n# entire query.\ncat > /tmp/queries <<'END'\n${t_install}
+        cluster:capacity:cpu:total:cores         sum(cluster:capacity_cpu_cores:sum)\n${t_install}
+        cluster:capacity:cpu:control_plane:cores max(cluster:capacity_cpu_cores:sum{label_node_role_kubernetes_io=\"master\"})\n\n${t_all}
+        \    cluster:usage:cpu:total:seconds   sum(increase(container_cpu_usage_seconds_total{id=\"/\"}[${d_all}]))\n${t_install}
+        cluster:usage:cpu:install:seconds sum(increase(container_cpu_usage_seconds_total{id=\"/\"}[${d_install}]))\n${t_test}
+        \   cluster:usage:cpu:test:seconds    sum(increase(container_cpu_usage_seconds_total{id=\"/\"}[${d_test}]))\n\n${t_all}
+        \    cluster:usage:cpu:total:rate   sum(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_all}]))\n${t_install}
+        cluster:usage:cpu:install:rate sum(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_install}]))\n${t_test}
+        \   cluster:usage:cpu:test:rate    sum(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_test}]))\n\n${t_all}
+        \    cluster:usage:cpu:control_plane:total:avg   avg(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_all}])
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"}))\n${t_install}
+        cluster:usage:cpu:control_plane:install:avg avg(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_install}])
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"}))\n${t_test}
+        \   cluster:usage:cpu:control_plane:test:avg    avg(rate(container_cpu_usage_seconds_total{id=\"/\"}[${d_test}])
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"}))\n\n${t_all}
+        \    cluster:usage:mem:rss:control_plane:quantile label_replace(max(quantile_over_time(0.99,
+        ((container_memory_rss{id=\"/\"} * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.99\", \"\", \"\")\n${t_all}     cluster:usage:mem:rss:control_plane:quantile
+        label_replace(max(quantile_over_time(0.9, ((container_memory_rss{id=\"/\"}
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.9\", \"\", \"\")\n${t_all}     cluster:usage:mem:rss:control_plane:quantile
+        label_replace(max(quantile_over_time(0.5, ((container_memory_rss{id=\"/\"}
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.5\", \"\", \"\")\n\n${t_all}     cluster:usage:mem:working_set:control_plane:quantile
+        label_replace(max(quantile_over_time(0.99, ((container_memory_working_set_bytes{id=\"/\"}
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.99\", \"\", \"\")\n${t_all}     cluster:usage:mem:working_set:control_plane:quantile
+        label_replace(max(quantile_over_time(0.9, ((container_memory_working_set_bytes{id=\"/\"}
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.9\", \"\", \"\")\n${t_all}     cluster:usage:mem:working_set:control_plane:quantile
+        label_replace(max(quantile_over_time(0.5, ((container_memory_working_set_bytes{id=\"/\"}
+        * on(node) group_left() group by (node) (kube_node_role{role=\"master\"})))[${d_all}:1s]
+        )), \"quantile\", \"0.5\", \"\", \"\")\n\n${t_all}     cluster:alerts:total:firing:distinct:severity
+        count by (severity) (count by (alertname,severity) (count_over_time(ALERTS{alertstate=\"firing\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}[${d_all}])))\n\n${t_test}
+        \   cluster:alerts:total:firing:seconds:severity count_over_time((sum by (severity)
+        (count by (alertname,severity) (ALERTS{alertstate=\"firing\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_test}:1s]))\n${t_install}
+        cluster:alerts:install:firing:seconds:severity count_over_time((sum by (severity)
+        (count by (alertname,severity) (ALERTS{alertstate=\"firing\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_install}:1s]))\n${t_test}
+        \   cluster:alerts:test:firing:seconds:severity count_over_time((sum by (severity)
+        (count by (alertname,severity) (ALERTS{alertstate=\"firing\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_test}:1s]))\n\n${t_test}
+        \   cluster:alerts:total:pending:seconds:severity count_over_time((sum by
+        (severity) (count by (alertname,severity) (ALERTS{alertstate=\"pending\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_test}:1s]))\n${t_install}
+        cluster:alerts:install:pending:seconds:severity count_over_time((sum by (severity)
+        (count by (alertname,severity) (ALERTS{alertstate=\"pending\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_install}:1s]))\n${t_test}
+        \   cluster:alerts:test:pending:seconds:severity count_over_time((sum by (severity)
+        (count by (alertname,severity) (ALERTS{alertstate=\"pending\",alertname!~\"AlertmanagerReceiversNotConfigured|Watchdog\"}))[${d_test}:1s]))\n\n${t_all}
+        \    cluster:api:total:requests sum(increase(apiserver_request_total[${d_all}]))\n${t_install}
+        cluster:api:install:requests sum(increase(apiserver_request_total[${d_install}]))\n${t_test}
+        \   cluster:api:requests:test sum(increase(apiserver_request_total[${d_test}]))\n\n${t_all}
+        \    cluster:api:read:total:requests sum(increase(apiserver_request_total{verb=~\"GET|LIST|WATCH\"}[${d_all}]))\n${t_install}
+        cluster:api:read:install:requests sum(increase(apiserver_request_total{verb=~\"GET|LIST|WATCH\"}[${d_install}]))\n${t_test}
+        \   cluster:api:read:test:requests sum(increase(apiserver_request_total{verb=~\"GET|LIST|WATCH\"}[${d_test}]))\n${t_all}
+        \    cluster:api:write:total:requests sum(increase(apiserver_request_total{verb!~\"GET|LIST|WATCH\"}[${d_all}]))\n${t_install}
+        cluster:api:write:install:requests sum(increase(apiserver_request_total{verb!~\"GET|LIST|WATCH\"}[${d_install}]))\n${t_test}
+        \   cluster:api:write:test:requests sum(increase(apiserver_request_total{verb!~\"GET|LIST|WATCH\"}[${d_test}]))\n\n${t_all}
+        \    cluster:api:errors:total:requests sum(increase(apiserver_request_total{code=~\"5\\\\\\\\d\\\\\\\\d|0\"}[${d_all}]))\n${t_install}
+        cluster:api:errors:install:requests sum(increase(apiserver_request_total{code=~\"5\\\\\\\\d\\\\\\\\d|0\"}[${d_install}]))\n\n${t_install}
+        cluster:resource:install:count sort_desc(max by(resource) (etcd_object_counts))
+        > 1\n${t_test}    cluster:resource:test:delta sort_desc(max by(resource) (delta(etcd_object_counts[${d_test}])))
+        != 0\n\n${t_all}     cluster:node:total:boots sum(increase(node_boots_total[${d_all}]))\n${t_test}
+        \   cluster:node:test:boots sum(increase(node_boots_total[${d_test}]))\n\n${t_all}
+        \    cluster:pod:openshift:unready:total:fraction   1-max(avg_over_time(cluster:usage:openshift:kube_running_pod_ready:avg[${d_all}]))\n${t_install}
+        cluster:pod:openshift:unready:install:fraction 1-max(avg_over_time(cluster:usage:openshift:kube_running_pod_ready:avg[${d_install}]))\n${t_test}
+        \   cluster:pod:openshift:unready:test:fraction    1-max(avg_over_time(cluster:usage:openshift:kube_running_pod_ready:avg[${d_test}]))\n\n${t_all}
+        \    cluster:pod:openshift:started:total:count sum(changes(kube_pod_start_time{namespace=~\"openshift-.*\"}[${d_all}])
+        + 1)\n${t_install} cluster:pod:openshift:started:install:count sum(changes(kube_pod_start_time{namespace=~\"openshift-.*\"}[${d_install}])
+        + 1)\n${t_test}    cluster:pod:openshift:started:test:count sum(changes(kube_pod_start_time{namespace=~\"openshift-.*\"}[${d_test}]))\n\n${t_all}
+        \    cluster:container:total:started count(count_over_time((count without(container,endpoint,name,namespace,pod,service,job,metrics_path,instance,image)
+        (container_start_time_seconds{container!=\"\",container!=\"POD\",pod!=\"\"}))[${d_all}:30s]))\n${t_install}
+        cluster:container:install:started  count(count_over_time((count without(container,endpoint,name,namespace,pod,service,job,metrics_path,instance,image)
+        (container_start_time_seconds{container!=\"\",container!=\"POD\",pod!=\"\"}))[${d_install}:30s]))\n${t_test}
+        \   cluster:container:test:started  count(count_over_time((count without(container,endpoint,name,namespace,pod,service,job,metrics_path,instance,image)
+        (container_start_time_seconds{container!=\"\",container!=\"POD\",pod!=\"\"}
+        > (${t_test}-${s_test})))[${d_test}:30s]))\n\n${t_all}     cluster:version:info:total
+        \  topk(1, max by (version) (max_over_time(cluster_version{type=\"completed\"}[${d_all}])))*0+1\n${t_install}
+        cluster:version:info:install topk(1, max by (version) (max_over_time(cluster_version{type=\"completed\"}[${d_install}])))*0+1\n\n${t_all}
+        \    cluster:version:current:seconds count_over_time(max by (version) ((cluster_version{type=\"current\"}))[${d_all}:1s])\n${t_test}
+        \   cluster:version:updates:seconds count_over_time(max by (version) ((cluster_version{type=\"updating\",from_version!=\"\"}))[${d_test}:1s])\n\n${t_all}
+        \    job:duration:total:seconds vector(${s_all})\n${t_install} job:duration:install:seconds
+        vector(${s_install})\n${t_test}    job:duration:test:seconds vector(${s_test})\n\n${t_all}
+        \    cluster:promtail:failed_targets   sum by (pod) (promtail_targets_failed_total{reason!=\"exists\"})\n${t_all}
+        \    cluster:promtail:dropped_entries  sum by (pod) (promtail_dropped_entries_total)\n${t_all}
+        \    cluster:promtail:request:duration sum by (status_code) (rate(promtail_request_duration_seconds_count[${d_all}]))\nEND\n\n#
+        topk(1, max by (image, version) (max_over_time(cluster_version{type=\"completed\"}[30m])))\n\n#
+        Perform variable replacement by putting each line of the query file through
+        an eval and then outputting\n# it back to a file.\n# glob expansion is disabled
+        because we use '*' in queries for multiplication\nset -f\n# clear the file\necho
+        > /tmp/queries_resolved\nwhile IFS= read -r i; do\n  if [[ -z \"${i}\" ]];
+        then continue; fi\n  # Try to convert the line of the file into a query, performing
+        bash substitution AND catch undefined variables\n  # The heredoc is necessary
+        because bash will perform quote evaluation on labels in queries (pod=\"x\"
+        becomes pod=x)\n  if ! q=$( eval $'cat <<END\\n'$i$'\\nEND\\n' 2>/dev/null
+        ); then\n    # evaluate the errors and output them to stderr\n    (\n      set
+        +e\n      set +x\n      q=$( eval $'cat <<END\\n'$i$'\\nEND\\n' 2>&1 1>/dev/null
+        )\n      echo \"error: Query '${i}' was not valid:$(echo \"${q}\" | cut -f
+        3- -d ':')\" 1>&2\n    )\n    continue\n  fi\n  echo \"${q}\" >> /tmp/queries_resolved\ndone
+        < /tmp/queries\nset +f\n\n# Output the script to execute. The first part embeds
+        the evaluated queries and will write them to /tmp\n# on the remote system.\ncat
+        <<SCRIPT\n#!/bin/bash\nset -euo pipefail\n\ncat > /tmp/queries <<'END'\n$(
+        cat /tmp/queries_resolved )\nEND\nSCRIPT\n# The second part of the script
+        iterates over the evaluated queries and queries a local prometheus.\n# Variables
+        are not expanded in this section.\ncat <<'SCRIPT'\nwhile IFS= read -r q; do\n
+        \ if [[ -z \"${q}\" ]]; then continue; fi\n  # part up the line '<unix_timestamp_query_time>
+        <name> <query>'\n  timestamp=${q%% *}\n  q=${q#* }\n  name=${q%% *}\n  query=\"${q#*
+        }\"\n  # perform the query against the local prometheus instance\n  if ! out=$(
+        curl -f --silent http://localhost:9090/api/v1/query --data-urlencode \"time=${timestamp}\"
+        --data-urlencode \"query=${query}\" ); then\n    echo \"error: Query ${name}
+        failed at ${timestamp}: ${query}\" 1>&2\n    continue\n  fi\n  # wrap the\n
+        \ echo \"{\\\"${name}\\\":${out}}\"\ndone < /tmp/queries\nSCRIPT\nGENERATE\nscript=\"$(\n
+        \ TEST_TIME_INSTALL_START=\"$( cat ${SHARED_DIR}/TEST_TIME_INSTALL_START ||
+        true )\" \\\n  TEST_TIME_INSTALL_END=\"$( cat ${SHARED_DIR}/TEST_TIME_INSTALL_END
+        || true  )\" \\\n  TEST_TIME_TEST_START=\"$( cat ${SHARED_DIR}/TEST_TIME_TEST_START
+        || true  )\" \\\n  TEST_TIME_TEST_END=\"$( cat ${SHARED_DIR}/TEST_TIME_TEST_END
+        || true  )\" \\\n  bash /tmp/generate.sh\n)\"\nqueue ${ARTIFACT_DIR}/metrics/job_metrics.json
+        oc --insecure-skip-tls-verify rsh -T -n openshift-monitoring -c thanos-query
+        deploy/thanos-querier /bin/bash -c \"${script}\"\n\nwait\n\n# This is a temporary
+        conversion of cluster operator status to JSON matching the upgrade - may be
+        moved to code in the future\ncurl -sL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+        >/tmp/jq && chmod ug+x /tmp/jq\nmkdir -p ${ARTIFACT_DIR}/junit/\n<${ARTIFACT_DIR}/clusteroperators.json
+        /tmp/jq -r 'def one(condition; t): t as $t | first([.[] | select(condition)]
+        | map(.type=t)[]) // null; def msg: \"Operator \\(.type) (\\(.reason)): \\(.message)\";
+        def xmlfailure: if .failure then \"<failure message=\\\"\\(.failure | @html)\\\">\\(.failure
+        | @html)</failure>\" else \"\" end; def xmltest: \"<testcase name=\\\"\\(.name
+        | @html)\\\">\\( xmlfailure )</testcase>\"; def withconditions: map({name:
+        \"operator conditions \\(.metadata.name)\"} + ((.status.conditions // [{type:\"Available\",status:
+        \"False\",message:\"operator is not reporting conditions\"}]) | (one(.type==\"Available\"
+        and .status!=\"True\"; \"unavailable\") // one(.type==\"Degraded\" and .status==\"True\";
+        \"degraded\") // one(.type==\"Progressing\" and .status==\"True\"; \"progressing\")
+        // null) | if . then {failure: .|msg} else null end)); .items | withconditions
+        | \"<testsuite name=\\\"Operator results\\\" tests=\\\"\\( length )\\\" failures=\\\"\\(
+        [.[] | select(.failure)] | length )\\\">\\n\\( [.[] | xmltest] | join(\"\\n\"))\\n</testsuite>\"'
+        >${ARTIFACT_DIR}/junit/junit_install_status.xml\n\n# This is an experimental
+        wiring of autogenerated failure detection.\necho \"Detect known failures from
+        symptoms (experimental) ...\"\ncurl -f https://gist.githubusercontent.com/smarterclayton/03b50c8f9b6351b2d9903d7fb35b342f/raw/symptom.sh
+        2>/dev/null | bash -s ${ARTIFACT_DIR} > ${ARTIFACT_DIR}/junit/junit_symptoms.xml\n\n#
+        Create custom-link-tools.html from custom-links.txt\nREPORT=\"${ARTIFACT_DIR}/custom-link-tools.html\"\ncat
+        >> ${REPORT} << EOF\n<link rel=\"stylesheet\" type=\"text/css\" href=\"/static/style.css\">\n<link
+        rel=\"stylesheet\" type=\"text/css\" href=\"/static/extensions/style.css\">\n<link
+        href=\"https://fonts.googleapis.com/css?family=Roboto:400,700\" rel=\"stylesheet\">\n<link
+        rel=\"stylesheet\" href=\"https://code.getmdl.io/1.3.0/material.indigo-pink.min.css\">\n<link
+        rel=\"stylesheet\" type=\"text/css\" href=\"/static/spyglass/spyglass.css\">\nEOF\ncat
+        ${SHARED_DIR}/custom-links.txt >> ${REPORT}\n"
+      from: cli
+      optional_on_success: true
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: gather-audit-logs
+      commands: "#!/bin/bash\n\nif test ! -f \"${KUBECONFIG}\"\nthen\n\techo \"No
+        kubeconfig, so no point in gathering audit logs.\"\n\texit 0\nfi\n\n# For
+        disconnected or otherwise unreachable environments, we want to\n# have steps
+        use an HTTP(S) proxy to reach the API server. This proxy\n# configuration
+        file should export HTTP_PROXY, HTTPS_PROXY, and NO_PROXY\n# environment variables,
+        as well as their lowercase equivalents (note\n# that libcurl doesn't recognize
+        the uppercase variables).\nif test -f \"${SHARED_DIR}/proxy-conf.sh\"\nthen\n\t#
+        shellcheck source=/dev/null\n\tsource \"${SHARED_DIR}/proxy-conf.sh\"\nfi\n\n#
+        Allow a job to override the must-gather image, this is needed for\n# disconnected
+        environments prior to 4.8.\nif test -f \"${SHARED_DIR}/must-gather-image.sh\"\nthen\n\t#
+        shellcheck source=/dev/null\n\tsource \"${SHARED_DIR}/must-gather-image.sh\"\nelse\n\tMUST_GATHER_IMAGE=${MUST_GATHER_IMAGE:-\"\"}\nfi\n\nmkdir
+        -p \"${ARTIFACT_DIR}/audit-logs\"\noc adm must-gather $MUST_GATHER_IMAGE --dest-dir=\"${ARTIFACT_DIR}/audit-logs\"
+        -- /usr/bin/gather_audit_logs\ntar -czC \"${ARTIFACT_DIR}/audit-logs\" -f
+        \"${ARTIFACT_DIR}/audit-logs.tar.gz\" .\nrm -rf \"${ARTIFACT_DIR}/audit-logs\"\n"
+      from: cli
+      optional_on_success: true
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: ipi-deprovision-deprovision
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        trap 'CHILDREN=$(jobs -p); if test -n "${CHILDREN}"; then kill ${CHILDREN} && wait; fi' TERM
+
+        export AWS_SHARED_CREDENTIALS_FILE=$CLUSTER_PROFILE_DIR/.awscred
+        export AZURE_AUTH_LOCATION=$CLUSTER_PROFILE_DIR/osServicePrincipal.json
+        export GOOGLE_CLOUD_KEYFILE_JSON=$CLUSTER_PROFILE_DIR/gce.json
+        export OS_CLIENT_CONFIG_FILE=${SHARED_DIR}/clouds.yaml
+        export OVIRT_CONFIG=${SHARED_DIR}/ovirt-config.yaml
+
+        echo "Deprovisioning cluster ..."
+        if [[ ! -s "${SHARED_DIR}/metadata.json" ]]; then
+          echo "Skipping: ${SHARED_DIR}/metadata.json not found."
+          exit
+        fi
+
+        cp -ar "${SHARED_DIR}" /tmp/installer
+
+        # TODO: remove once BZ#1926093 is done and backported
+        if [[ "${CLUSTER_TYPE}" == "ovirt" ]]; then
+          echo "Destroy bootstrap ..."
+          set +e
+          openshift-install --dir /tmp/installer destroy bootstrap
+          set -e
+        fi
+
+        openshift-install --dir /tmp/installer destroy cluster &
+
+        set +e
+        wait "$!"
+        ret="$?"
+        set -e
+
+        cp /tmp/installer/.openshift_install.log "${ARTIFACT_DIR}"
+
+        exit "$ret"
+      from: installer
+      grace_period: 10m0s
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 300Mi
+      timeout: 45m0s
+    pre:
+    - as: ipi-conf
+      commands: "#!/bin/bash\n\nset -o nounset\nset -o errexit\nset -o pipefail\n\ncluster_name=${NAMESPACE}-${JOB_NAME_HASH}\n\nout=${SHARED_DIR}/install-config.yaml\n\nif
+        [[ -z \"$RELEASE_IMAGE_LATEST\" ]]; then\n  echo \"RELEASE_IMAGE_LATEST is
+        an empty string, exiting\"\n  exit 1\nfi\n\necho \"Installing from release
+        ${RELEASE_IMAGE_LATEST}\"\n\nssh_pub_key=$(<\"${CLUSTER_PROFILE_DIR}/ssh-publickey\")\npull_secret=$(<\"${CLUSTER_PROFILE_DIR}/pull-secret\")\n\ncat
+        > \"${out}\" << EOF\napiVersion: v1\nmetadata:\n  name: ${cluster_name}\npullSecret:
+        >\n  ${pull_secret}\nsshKey: |\n  ${ssh_pub_key}\nEOF\n\nif [ ${FIPS_ENABLED}
+        = \"true\" ]; then\n\techo \"Adding 'fips: true' to install-config.yaml\"\n\tcat
+        >> \"${out}\" << EOF\nfips: true\nEOF\nfi"
+      env:
+      - default: "false"
+        name: FIPS_ENABLED
+      from_image:
+        name: centos
+        namespace: origin
+        tag: "8"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 100Mi
+    - as: ipi-conf-aws
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        export AWS_SHARED_CREDENTIALS_FILE="${CLUSTER_PROFILE_DIR}/.awscred"
+
+        CONFIG="${SHARED_DIR}/install-config.yaml"
+
+        expiration_date=$(date -d '8 hours' --iso=minutes --utc)
+
+        function join_by { local IFS="$1"; shift; echo "$*"; }
+
+        REGION="${LEASED_RESOURCE}"
+        # BootstrapInstanceType gets its value from pkg/types/aws/defaults/platform.go
+        BOOTSTRAP_NODE_TYPE=m5.large
+
+        workers=3
+        if [[ "${SIZE_VARIANT}" == "compact" ]]; then
+          workers=0
+        fi
+        master_type=null
+        if [[ "${SIZE_VARIANT}" == "xlarge" ]]; then
+          master_type=m5.8xlarge
+        elif [[ "${SIZE_VARIANT}" == "large" ]]; then
+          master_type=m5.4xlarge
+        elif [[ "${SIZE_VARIANT}" == "compact" ]]; then
+          master_type=m5.2xlarge
+        fi
+
+        # Generate working availability zones from the region
+        mapfile -t AVAILABILITY_ZONES < <(aws --region "${REGION}" ec2 describe-availability-zones | jq -r '.AvailabilityZones[] | select(.State == "available") | .ZoneName' | sort -u)
+        # Generate availability zones with OpenShift Installer required instance types
+        mapfile -t INSTANCE_ZONES < <(aws --region "${REGION}" ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values="${BOOTSTRAP_NODE_TYPE}","${master_type}","${COMPUTE_NODE_TYPE}" | jq -r '.InstanceTypeOfferings[].Location' | sort -u)
+        # Generate availability zones based on these 2 criterias
+        mapfile -t ZONES < <(echo "${AVAILABILITY_ZONES[@]}" "${INSTANCE_ZONES[@]}" | sed 's/ /\n/g' | sort -R | uniq -d)
+        # Calculate the maximum number of availability zones from the region
+        MAX_ZONES_COUNT="${#ZONES[@]}"
+        # Save max zones count information to ${SHARED_DIR} for use in other scenarios
+        echo "${MAX_ZONES_COUNT}" >> "${SHARED_DIR}/maxzonescount"
+
+
+        ZONES_COUNT=${ZONES_COUNT:-2}
+        ZONES=("${ZONES[@]:0:${ZONES_COUNT}}")
+        ZONES_STR="[ "
+        ZONES_STR+=$(join_by , "${ZONES[@]}")
+        ZONES_STR+=" ]"
+        echo "AWS region: ${REGION} (zones: ${ZONES_STR})"
+
+        cat >> "${CONFIG}" << EOF
+        baseDomain: ${BASE_DOMAIN}
+        platform:
+          aws:
+            region: ${REGION}
+            userTags:
+              expirationDate: ${expiration_date}
+        controlPlane:
+          name: master
+          platform:
+            aws:
+              type: ${master_type}
+              zones: ${ZONES_STR}
+        compute:
+        - name: worker
+          replicas: ${workers}
+          platform:
+            aws:
+              type: ${COMPUTE_NODE_TYPE}
+              zones: ${ZONES_STR}
+        EOF
+      env:
+      - default: ""
+        documentation: |-
+          The size of the cluster in one of our supported t-shirt values that is standard across all CI environments.
+
+          The sizes are:
+          * "" (default) - 4 vCPU, 16GB control plane nodes, default workers
+          * "compact" - 8 vCPU, 32GB control plane nodes, no workers
+          * "large" - 16 vCPU, 64GB+ control plane nodes, default workers, suitable for clusters up to 250 nodes
+          * "xlarge" - 32 vCPU, 128GB+ control plane nodes, default workers, suitable for clusters up to 1000 nodes
+
+          These sizes are roughly consistent across all cloud providers, but we may not be able to instantiate some sizes
+          in some regions or accounts due to quota issues.
+        name: SIZE_VARIANT
+      - default: m5.xlarge
+        documentation: The instance type to use for compute nodes (e.g. AWS https://aws.amazon.com/ec2/instance-types/).
+          We use a 4 core worker to match the median configuration of the fleet.
+        name: COMPUTE_NODE_TYPE
+      - default: "2"
+        documentation: The number of AZs to present in the cluster. Accepted values
+          are 1 and 2.
+        name: ZONES_COUNT
+      - default: cpaas-ci.devcluster.openshift.com
+        documentation: A fully-qualified domain or subdomain name. The base domain
+          of the cloud provider is used for setting baseDomain variable of the install
+          configuration of the cluster.
+        name: BASE_DOMAIN
+      from_image:
+        name: "4.5"
+        namespace: ocp
+        tag: upi-installer
+      resources:
+        requests:
+          cpu: 10m
+          memory: 100Mi
+    - as: ipi-install-monitoringpvc
+      commands: |
+        #!/bin/bash
+        set -o errexit
+        set -o nounset
+        set -o pipefail
+
+        # Every cluster that can should have a PV for prometheus data so that data is preserved
+        # across reschedules of pods. This may need to be conditionally disabled in the future
+        # if certain instance types are used that cannot access persistent volumes.
+        cat >> "${SHARED_DIR}/manifest_cluster-monitoring-pvc.yml" << EOF
+        kind: ConfigMap
+        apiVersion: v1
+        metadata:
+          name: cluster-monitoring-config
+          namespace: openshift-monitoring
+        data:
+          config.yaml: |+
+            prometheusK8s:
+              volumeClaimTemplate:
+                metadata:
+                  name: prometheus-data
+                spec:
+                  resources:
+                    requests:
+                      storage: 10Gi
+        EOF
+      from: cli
+      resources:
+        requests:
+          cpu: 100m
+          memory: 100Mi
+    - as: ipi-install-rbac
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        # This step wants to always talk to the build farm (via service account credentials) but ci-operator
+        # gives steps KUBECONFIG pointing to cluster under test under some circumstances, which is never
+        # the correct cluster to interact with for this step.
+        unset KUBECONFIG
+
+        # We want the test cluster to be able to access these images on the build farm
+        oc adm policy add-role-to-group system:image-puller system:authenticated --namespace "${NAMESPACE}"
+        oc adm policy add-role-to-group system:image-puller system:unauthenticated --namespace "${NAMESPACE}"
+      from: cli
+      resources:
+        requests:
+          cpu: 100m
+          memory: 100Mi
+    - as: ipi-install-install
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        function populate_artifact_dir() {
+          set +e
+          echo "Copying log bundle..."
+          cp "${dir}"/log-bundle-*.tar.gz "${ARTIFACT_DIR}/" 2>/dev/null
+          echo "Removing REDACTED info from log..."
+          sed '
+            s/password: .*/password: REDACTED/;
+            s/X-Auth-Token.*/X-Auth-Token REDACTED/;
+            s/UserData:.*,/UserData: REDACTED,/;
+            ' "${dir}/.openshift_install.log" > "${ARTIFACT_DIR}/.openshift_install.log"
+        }
+
+        function prepare_next_steps() {
+          set +e
+          echo "Setup phase finished, prepare env for next steps"
+          populate_artifact_dir
+          echo "Copying required artifacts to shared dir"
+          #Copy the auth artifacts to shared dir for the next steps
+          cp \
+              -t "${SHARED_DIR}" \
+              "${dir}/auth/kubeconfig" \
+              "${dir}/auth/kubeadmin-password" \
+              "${dir}/metadata.json"
+
+          # TODO: remove once BZ#1926093 is done and backported
+          if [[ "${CLUSTER_TYPE}" == "ovirt" ]]; then
+            cp -t "${SHARED_DIR}" "${dir}"/terraform.*
+          fi
+        }
+
+        trap 'prepare_next_steps' EXIT TERM
+        trap 'CHILDREN=$(jobs -p); if test -n "${CHILDREN}"; then kill ${CHILDREN} && wait; fi' TERM
+
+        if [[ -z "$OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE" ]]; then
+          echo "OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE is an empty string, exiting"
+          exit 1
+        fi
+
+        echo "Installing from release ${OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE}"
+        export SSH_PRIV_KEY_PATH=${CLUSTER_PROFILE_DIR}/ssh-privatekey
+        export PULL_SECRET_PATH=${CLUSTER_PROFILE_DIR}/pull-secret
+        export OPENSHIFT_INSTALL_INVOKER=openshift-internal-ci/${JOB_NAME}/${BUILD_ID}
+        export HOME=/tmp
+
+        case "${CLUSTER_TYPE}" in
+        aws) export AWS_SHARED_CREDENTIALS_FILE=${CLUSTER_PROFILE_DIR}/.awscred;;
+        azure4) export AZURE_AUTH_LOCATION=${CLUSTER_PROFILE_DIR}/osServicePrincipal.json;;
+        gcp) export GOOGLE_CLOUD_KEYFILE_JSON=${CLUSTER_PROFILE_DIR}/gce.json;;
+        kubevirt) export KUBEVIRT_KUBECONFIG=${HOME}/.kube/config;;
+        vsphere) ;;
+        openstack-osuosl) ;;
+        openstack-ppc64le) ;;
+        openstack*) export OS_CLIENT_CONFIG_FILE=${SHARED_DIR}/clouds.yaml ;;
+        ovirt) export OVIRT_CONFIG="${SHARED_DIR}/ovirt-config.yaml" ;;
+        *) >&2 echo "Unsupported cluster type '${CLUSTER_TYPE}'"
+        esac
+
+        dir=/tmp/installer
+        mkdir "${dir}/"
+        cp "${SHARED_DIR}/install-config.yaml" "${dir}/"
+
+        # move private key to ~/.ssh/ so that installer can use it to gather logs on
+        # bootstrap failure
+        mkdir -p ~/.ssh
+        cp "${SSH_PRIV_KEY_PATH}" ~/.ssh/
+
+        echo "$(date +%s)" > "${SHARED_DIR}/TEST_TIME_INSTALL_START"
+
+        openshift-install --dir="${dir}" create manifests &
+        wait "$!"
+
+        sed -i '/^  channel:/d' "${dir}/manifests/cvo-overrides.yaml"
+
+        echo "Will include manifests:"
+        find "${SHARED_DIR}" \( -name "manifest_*.yml" -o -name "manifest_*.yaml" \)
+
+        while IFS= read -r -d '' item
+        do
+          manifest="$( basename "${item}" )"
+          cp "${item}" "${dir}/manifests/${manifest##manifest_}"
+        done <   <( find "${SHARED_DIR}" \( -name "manifest_*.yml" -o -name "manifest_*.yaml" \) -print0)
+
+        find "${SHARED_DIR}" \( -name "tls_*.key" -o -name "tls_*.pub" \)
+
+        mkdir -p "${dir}/tls"
+        while IFS= read -r -d '' item
+        do
+          manifest="$( basename "${item}" )"
+          cp "${item}" "${dir}/tls/${manifest##tls_}"
+        done <   <( find "${SHARED_DIR}" \( -name "tls_*.key" -o -name "tls_*.pub" \) -print0)
+
+        date "+%F %X" > "${SHARED_DIR}/CLUSTER_INSTALL_START_TIME"
+        TF_LOG=debug openshift-install --dir="${dir}" create cluster 2>&1 | grep --line-buffered -v 'password\|X-Auth-Token\|UserData:' &
+
+        wait "$!"
+        ret="$?"
+
+        echo "$(date +%s)" > "${SHARED_DIR}/TEST_TIME_INSTALL_END"
+        date "+%F %X" > "${SHARED_DIR}/CLUSTER_INSTALL_END_TIME"
+
+        if test "${ret}" -eq 0 ; then
+          touch  "${SHARED_DIR}/success"
+        fi
+
+        exit "$ret"
+      dependencies:
+      - env: OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE
+        name: release:latest
+      - env: RELEASE_IMAGE_LATEST
+        name: release:latest
+      env:
+      - default: "false"
+        documentation: Using experimental Azure dual-stack support
+        name: OPENSHIFT_INSTALL_EXPERIMENTAL_DUAL_STACK
+      from: installer
+      grace_period: 10m0s
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+    - as: ipi-install-times-collection
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o pipefail
+
+        echo "Updating openshift-install ConfigMap with the start and end times."
+        START_TIME=$(cat "$SHARED_DIR/CLUSTER_INSTALL_START_TIME")
+        END_TIME=$(cat "$SHARED_DIR/CLUSTER_INSTALL_END_TIME")
+        if ! oc patch configmap openshift-install -n openshift-config -p '{"data":{"startTime":"'"$START_TIME"'","endTime":"'"$END_TIME"'"}}'
+        then
+            oc create configmap openshift-install -n openshift-config --from-literal=startTime="$START_TIME" --from-literal=endTime="$END_TIME"
+        fi
+      from: cli
+      resources:
+        requests:
+          cpu: 10m
+          memory: 100Mi
+    - as: optional-operators-configure-proxy-registry
+      commands: "#!/bin/bash\n\nset -o nounset\nset -o errexit\nset -o pipefail\n\n#
+        steps involved inside the configure proxy registry \n# 0. needs to add the
+        pull secrets provided by \n# mirroring the pull secrets\n\n# add brew pull
+        secret \noc set data secret/pull-secret -n openshift-config --from-file=.dockerconfigjson=/var/run/brew-pullsecret/.dockerconfigjson\n\n#
+        1. Apply the ICSP to the cluster \necho \"Creating new proxy registry record
+        on cluster\"\nOO_CONFIGURE_PROXY_REGISTRY=$(\n    oc create -f - -o jsonpath='{.metadata.name}'
+        <<EOF\napiVersion: operator.openshift.io/v1alpha1\nkind: ImageContentSourcePolicy\nmetadata:\n
+        \ name: brew-registry\nspec:\n  repositoryDigestMirrors:\n  - mirrors:\n    -
+        brew.registry.redhat.io\n    source: registry.redhat.io\n  - mirrors:\n    -
+        brew.registry.redhat.io\n    source: registry.stage.redhat.io\n  - mirrors:\n
+        \   - brew.registry.redhat.io\n    source: registry-proxy.engineering.redhat.com\n
+        \ - mirrors:\n    - brew.registry.redhat.io\n    source: registry-proxy-stage.engineering.redhat.com\nEOF\n)\necho
+        \"Configuring proxy registry : \\\"$OO_CONFIGURE_PROXY_REGISTRY\\\"\"\n\n#
+        step-3: Disable the default OperatorSources/Sources (for redhat-operators,
+        certified-operators, and community-operators) on your 4.5 cluster (or default
+        CatalogSources in 4.6+) with the following command:\noc patch OperatorHub
+        cluster --type json -p '[{\"op\": \"add\", \"path\": \"/spec/disableAllDefaultSources\",
+        \"value\": true}]'\n\n# Sleep for 2 minutes to allow for the nodes to begin
+        restarting\nsleep 120\n# Query the node state until all of the nodes are ready\nfor
+        i in {1..60}; do\n    NODE_STATE=\"$(oc get nodes || echo \"ERROR\")\"\n    if
+        [[ ${NODE_STATE} == *\"NotReady\"*  || ${NODE_STATE} == *\"SchedulingDisabled\"*
+        ]]; then\n        echo \"Not all of the nodes have finished restarting - waiting
+        for 30 seconds, attempt ${i}\"\n        sleep 30\n    elif [[ ${NODE_STATE}
+        == \"ERROR\" ]]; then\n        echo \"Encountered an issue querying the OpenShift
+        API - waiting for 30 seconds, attempt ${i}\"\n        sleep 30\n    else\n
+        \       echo \"All nodes ready\"\n        break\n    fi\ndone\n"
+      credentials:
+      - mount_path: /var/run/brew-pullsecret
+        name: brew-registry-pullsecret
+        namespace: test-credentials
+      from: cli
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: optional-operators-cvp-common-apply-secrets
+      commands: |
+        #!/bin/bash
+
+        # Steps for extracting and applying the kube_secrets ISV parameter
+        # Expects the standard Prow environment variables to be set
+
+        REHEARSAL_INSTALL_NAMESPACE="!create"
+
+        PYXIS_URL="${PYXIS_URL:-""}"
+        # The namespace into which the operator and catalog will be
+        # installed. Special value `!create` means that a new namespace will be created.
+        OO_INSTALL_NAMESPACE="${OO_INSTALL_NAMESPACE:-$REHEARSAL_INSTALL_NAMESPACE}"
+
+        # Check if PYXIS_URL exists, skip the whole step if not.
+        if [[ -z "$PYXIS_URL" ]]; then
+            echo "PYXIS_URL is not defined, skipping step cvp-common-apply-secrets!"
+            exit 0
+        else
+            echo "PYXIS_URL is defined, proceeding with cvp-common-apply-secrets step."
+        fi
+
+        echo "Creating a new NAMESPACE"
+        if [[ "$OO_INSTALL_NAMESPACE" == "!create" ]]; then
+            echo "OO_INSTALL_NAMESPACE is '!create': creating new namespace"
+            NS_NAMESTANZA="generateName: oo-"
+        elif ! oc get namespace "$OO_INSTALL_NAMESPACE"; then
+            echo "OO_INSTALL_NAMESPACE is '$OO_INSTALL_NAMESPACE' which does not exist: creating"
+            NS_NAMESTANZA="name: $OO_INSTALL_NAMESPACE"
+        else
+            echo "OO_INSTALL_NAMESPACE is '$OO_INSTALL_NAMESPACE'"
+        fi
+
+        if [[ -n "${NS_NAMESTANZA:-}" ]]; then
+            OO_INSTALL_NAMESPACE=$(
+                oc create -f - -o jsonpath='{.metadata.name}' <<EOF
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          $NS_NAMESTANZA
+        EOF
+            )
+        fi
+
+        # Creating file that contains namespace name
+        echo "$OO_INSTALL_NAMESPACE" > "${SHARED_DIR}"/operator-install-namespace.txt
+
+        GPG_KEY='/var/run/cvp-pyxis-gpg-secret/cvp-gpg.key' # Secret file which will be mounted by DPTP
+        GPG_PASS='/var/run/cvp-pyxis-gpg-secret/cvp-gpg.pass' # Secret file which will be mounted by DPTP
+        PKCS12_CERT='/var/run/cvp-pyxis-gpg-secret/cvp-dptp.cert' # Secret file which will be mounted by DPTP
+        PKCS12_KEY='/var/run/cvp-pyxis-gpg-secret/cvp-dptp.key' # Secret file which will be mounted by DPTP
+
+        echo "Fetching the kube_objects from Pyxis for ISV pid ${PYXIS_URL}"
+        touch /tmp/get_kubeObjects.txt
+        curl --key "${PKCS12_KEY}" --cert "${PKCS12_CERT}" "${PYXIS_URL}" | jq -r ".container.kube_objects" > /tmp/get_kubeObjects.txt
+
+        echo "Decrypting the kube_objects fetched from Pyxis"
+        gpg --batch --yes --quiet --pinentry-mode loopback --import --passphrase-file "${GPG_PASS}" "${GPG_KEY}"
+        gpg --batch --yes --quiet --pinentry-mode loopback --decrypt --passphrase-file "${GPG_PASS}" /tmp/get_kubeObjects.txt > /tmp/kube_objects.yaml
+
+        echo "Applying the kube_objects on the testing OCP cluster"
+        oc apply -f /tmp/kube_objects.yaml -n "$OO_INSTALL_NAMESPACE"
+
+        # Remove the kube objects file just in case
+        rm -rf /tmp/kube_objects.yaml
+      credentials:
+      - mount_path: /var/run/cvp-pyxis-gpg-secret
+        name: cvp-pyxis-gpg-secret
+        namespace: test-credentials
+      env:
+      - default: ""
+        documentation: Optional. URL that contains specific cvp product package name
+          for specific ISV with unique pid.
+        name: PYXIS_URL
+      from_image:
+        name: cvp-operator-scorecard
+        namespace: ci
+        tag: v1
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: optional-operators-subscribe
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        # In upgrade tests, the subscribe step installs the initial version of the operator, so
+        # it needs to install from the INITIAL_OO_CHANNEL
+        if [ -n "${INITIAL_OO_CHANNEL}" ]; then
+            OO_CHANNEL="${INITIAL_OO_CHANNEL}"
+        fi
+
+        if [[ $JOB_NAME != rehearse-* ]]; then
+            if [[ -z ${OO_INDEX:-} ]] || [[ -z ${OO_PACKAGE:-} ]] || [[ -z ${OO_CHANNEL:-} ]]; then
+                echo "At least of required variables OO_INDEX=${OO_INDEX:-} OO_PACKAGE=${OO_PACKAGE:-} OO_CHANNEL=${OO_CHANNEL:-} is unset"
+                echo "Variables are only allowed to be unset in rehearsals"
+                exit 1
+            fi
+        fi
+
+        echo "== Parameters:"
+        echo "OO_INDEX:       $OO_INDEX"
+        echo "OO_PACKAGE:           $OO_PACKAGE"
+        echo "OO_CHANNEL:           $OO_CHANNEL"
+        echo "OO_INSTALL_NAMESPACE: $OO_INSTALL_NAMESPACE"
+        echo "OO_TARGET_NAMESPACES: $OO_TARGET_NAMESPACES"
+
+        if [[ -f "${SHARED_DIR}/operator-install-namespace.txt" ]]; then
+            OO_INSTALL_NAMESPACE=$(cat "$SHARED_DIR"/operator-install-namespace.txt)
+        elif [[ "$OO_INSTALL_NAMESPACE" == "!create" ]]; then
+            echo "OO_INSTALL_NAMESPACE is '!create': creating new namespace"
+            NS_NAMESTANZA="generateName: oo-"
+        elif ! oc get namespace "$OO_INSTALL_NAMESPACE"; then
+            echo "OO_INSTALL_NAMESPACE is '$OO_INSTALL_NAMESPACE' which does not exist: creating"
+            NS_NAMESTANZA="name: $OO_INSTALL_NAMESPACE"
+        else
+            echo "OO_INSTALL_NAMESPACE is '$OO_INSTALL_NAMESPACE'"
+        fi
+
+        if [[ -n "${NS_NAMESTANZA:-}" ]]; then
+            OO_INSTALL_NAMESPACE=$(
+                oc create -f - -o jsonpath='{.metadata.name}' <<EOF
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          $NS_NAMESTANZA
+        EOF
+            )
+        fi
+
+        echo "Installing \"$OO_PACKAGE\" in namespace \"$OO_INSTALL_NAMESPACE\""
+
+        if [[ "$OO_TARGET_NAMESPACES" == "!install" ]]; then
+            echo "OO_TARGET_NAMESPACES is '!install': targeting operator installation namespace ($OO_INSTALL_NAMESPACE)"
+            OO_TARGET_NAMESPACES="$OO_INSTALL_NAMESPACE"
+        elif [[ "$OO_TARGET_NAMESPACES" == "!all" ]]; then
+            echo "OO_TARGET_NAMESPACES is '!all': all namespaces will be targeted"
+            OO_TARGET_NAMESPACES=""
+        fi
+
+        OPERATORGROUP=$(oc -n "$OO_INSTALL_NAMESPACE" get operatorgroup -o jsonpath="{.items[*].metadata.name}" || true)
+
+        if [[ $(echo "$OPERATORGROUP" | wc -w) -gt 1 ]]; then
+            echo "Error: multiple OperatorGroups in namespace \"$OO_INSTALL_NAMESPACE\": $OPERATORGROUP" 1>&2
+            oc -n "$OO_INSTALL_NAMESPACE" get operatorgroup -o yaml >"$ARTIFACT_DIR/operatorgroups-$OO_INSTALL_NAMESPACE.yaml"
+            exit 1
+        elif [[ -n "$OPERATORGROUP" ]]; then
+            echo "OperatorGroup \"$OPERATORGROUP\" exists: modifying it"
+            oc -n "$OO_INSTALL_NAMESPACE" get operatorgroup "$OPERATORGROUP" -o yaml >"$ARTIFACT_DIR/og-$OPERATORGROUP-orig.yaml"
+            OG_OPERATION=apply
+            OG_NAMESTANZA="name: $OPERATORGROUP"
+        else
+            echo "OperatorGroup does not exist: creating it"
+            OG_OPERATION=create
+            OG_NAMESTANZA="generateName: oo-"
+        fi
+
+        OPERATORGROUP=$(
+            oc $OG_OPERATION -f - -o jsonpath='{.metadata.name}' <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          $OG_NAMESTANZA
+          namespace: $OO_INSTALL_NAMESPACE
+        spec:
+          targetNamespaces: [$OO_TARGET_NAMESPACES]
+        EOF
+        )
+
+        echo "OperatorGroup name is \"$OPERATORGROUP\""
+        echo "Creating CatalogSource"
+
+        CATSRC=$(
+            oc create -f - -o jsonpath='{.metadata.name}' <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: CatalogSource
+        metadata:
+          generateName: oo-
+          namespace: $OO_INSTALL_NAMESPACE
+        spec:
+          sourceType: grpc
+          image: "$OO_INDEX"
+        EOF
+        )
+
+        echo "CatalogSource name is \"$CATSRC\""
+
+        DEPLOYMENT_START_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        echo "Set the deployment start time: ${DEPLOYMENT_START_TIME}"
+
+        echo "Creating Subscription"
+
+        SUB_MANIFEST=$(cat <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          generateName: oo-
+          namespace: $OO_INSTALL_NAMESPACE
+        spec:
+          name: $OO_PACKAGE
+          OO_CHANNEL: "$OO_CHANNEL"
+          source: $CATSRC
+          sourceNamespace: $OO_INSTALL_NAMESPACE
+          installPlanApproval: Manual
+        EOF
+        )
+
+        # Add startingCSV is one is provided
+        if [ -n "${INITIAL_CSV}" ]; then
+            SUB_MANIFEST="${SUB_MANIFEST}"$'\n'"  startingCSV: ${INITIAL_CSV}"
+        fi
+
+        SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<< "${SUB_MANIFEST}" )
+
+        echo "Subscription name is \"$SUB\""
+        echo "Waiting for installPlan to be created"
+
+        # store subscription name and install namespace to shared directory for upgrade step
+        echo "${OO_INSTALL_NAMESPACE}" > "${SHARED_DIR}"/oo-install-namespace
+        echo "${SUB}" > "${SHARED_DIR}"/oo-subscription
+
+        FOUND_INSTALLPLAN=false
+        # wait up to 5 minutes for CSV installPlan to appear
+        for _ in $(seq 1 60); do
+            INSTALL_PLAN=$(oc -n "$OO_INSTALL_NAMESPACE" get subscription "$SUB" -o jsonpath='{.status.installplan.name}' || true)
+            if [[ -n "$INSTALL_PLAN" ]]; then
+              oc -n "$OO_INSTALL_NAMESPACE" patch installPlan "${INSTALL_PLAN}" --type merge --patch '{"spec":{"approved":true}}'
+              FOUND_INSTALLPLAN=true
+              break
+            fi
+            sleep 5
+        done
+
+
+        if [ "$FOUND_INSTALLPLAN" = true ] ; then
+            echo "Install Plan approved"
+            echo "Waiting for ClusterServiceVersion to become ready..."
+
+            # wait 10 minutes for operator installation to complete
+            for _ in $(seq 1 60); do
+                CSV=$(oc -n "$OO_INSTALL_NAMESPACE" get subscription "$SUB" -o jsonpath='{.status.installedCSV}' || true)
+                if [[ -n "$CSV" ]]; then
+                    if [[ "$(oc -n "$OO_INSTALL_NAMESPACE" get csv "$CSV" -o jsonpath='{.status.phase}')" == "Succeeded" ]]; then
+                        echo "ClusterServiceVersion \"$CSV\" ready"
+                        exit 0
+                    fi
+                fi
+                sleep 10
+            done
+
+            for _ in $(seq 1 60); do
+              CSV=$(oc -n "$OO_INSTALL_NAMESPACE" get subscription "$SUB" -o jsonpath='{.status.installedCSV}' || true)
+              if [[ -n "$CSV" ]]; then
+                  if [[ "$(oc -n "$OO_INSTALL_NAMESPACE" get csv "$CSV" -o jsonpath='{.status.phase}')" == "Succeeded" ]]; then
+                      echo "ClusterServiceVersion \"$CSV\" ready"
+
+                      DEPLOYMENT_ART="oo_deployment_details.yaml"
+                      echo "Saving deployment details in ${DEPLOYMENT_ART} as a shared artifact"
+                      cat > "${ARTIFACT_DIR}/${DEPLOYMENT_ART}" <<EOF
+        ---
+        csv: "${CSV}"
+        operatorgroup: "${OPERATORGROUP}"
+        subscription: "{SUB}"
+        catalogsource: "${CATSRC}"
+        OO_INSTALL_NAMESPACE: "${OO_INSTALL_NAMESPACE}"
+        OO_TARGET_NAMESPACES: "${OO_TARGET_NAMESPACES}"
+        deployment_start_time: "${DEPLOYMENT_START_TIME}"
+        EOF
+                      cp "${ARTIFACT_DIR}/${DEPLOYMENT_ART}" "${SHARED_DIR}/${DEPLOYMENT_ART}"
+                      exit 0
+                  fi
+              fi
+              sleep 10
+            done
+            echo "Timed out waiting for csv to become ready"
+        else
+            echo "Failed to find installPlan for subscription"
+        fi
+
+        NS_ART="$ARTIFACT_DIR/ns-$OO_INSTALL_NAMESPACE.yaml"
+        echo "Dumping Namespace $OO_INSTALL_NAMESPACE as $NS_ART"
+        oc get namespace "$OO_INSTALL_NAMESPACE" -o yaml >"$NS_ART"
+
+        OG_ART="$ARTIFACT_DIR/og-$OPERATORGROUP.yaml"
+        echo "Dumping OperatorGroup $OPERATORGROUP as $OG_ART"
+        oc get -n "$OO_INSTALL_NAMESPACE" operatorgroup "$OPERATORGROUP" -o yaml >"$OG_ART"
+
+        CS_ART="$ARTIFACT_DIR/cs-$CATSRC.yaml"
+        echo "Dumping CatalogSource $CATSRC as $CS_ART"
+        oc get -n "$OO_INSTALL_NAMESPACE" catalogsource "$CATSRC" -o yaml >"$CS_ART"
+        for field in message reason; do
+            VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" catalogsource "$CATSRC" -o jsonpath="{.status.$field}" || true)"
+            if [[ -n "$VALUE" ]]; then
+                echo "  CatalogSource $CATSRC status $field: $VALUE"
+            fi
+        done
+
+        SUB_ART="$ARTIFACT_DIR/sub-$SUB.yaml"
+        echo "Dumping Subscription $SUB as $SUB_ART"
+        oc get -n "$OO_INSTALL_NAMESPACE" subscription "$SUB" -o yaml >"$SUB_ART"
+        for field in state reason; do
+            VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" subscription "$SUB" -o jsonpath="{.status.$field}" || true)"
+            if [[ -n "$VALUE" ]]; then
+                echo "  Subscription $SUB status $field: $VALUE"
+            fi
+        done
+
+        if [[ -n "$CSV" ]]; then
+            CSV_ART="$ARTIFACT_DIR/csv-$CSV.yaml"
+            echo "ClusterServiceVersion $CSV was created but never became ready"
+            echo "Dumping ClusterServiceVersion $CSV as $CSV_ART"
+            oc get -n "$OO_INSTALL_NAMESPACE" csv "$CSV" -o yaml >"$CSV_ART"
+            for field in phase message reason; do
+                VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" csv "$CSV" -o jsonpath="{.status.$field}" || true)"
+                if [[ -n "$VALUE" ]]; then
+                    echo "  ClusterServiceVersion $CSV status $field: $VALUE"
+                fi
+            done
+        else
+            CSV_ART="$ARTIFACT_DIR/$OO_INSTALL_NAMESPACE-all-csvs.yaml"
+            echo "ClusterServiceVersion $CSV was never created"
+            echo "Dumping all ClusterServiceVersions in namespace $OO_INSTALL_NAMESPACE to $CSV_ART"
+            oc get -n "$OO_INSTALL_NAMESPACE" csv -o yaml >"$CSV_ART"
+        fi
+
+        INSTALLPLANS_ART="$ARTIFACT_DIR/installPlans.yaml"
+        echo "Dumping all installPlans in namespace $OO_INSTALL_NAMESPACE as $INSTALLPLANS_ART"
+        oc get -n "$OO_INSTALL_NAMESPACE" installplans -o yaml >"$INSTALLPLANS_ART"
+
+        exit 1
+      dependencies:
+      - env: OO_INDEX
+        name: ci-index
+      env:
+      - default: e2e-test-operator
+        documentation: The name of the operator package to be installed. Must be present
+          in the index image referenced by `INDEX_IMAGE`.
+        name: OO_PACKAGE
+      - default: "4.3"
+        documentation: The name of the operator channel to track.
+        name: OO_CHANNEL
+      - default: '!create'
+        documentation: The namespace into which the operator and catalog will be installed.
+          Special value `!create` means that a new namespace will be created.
+        name: OO_INSTALL_NAMESPACE
+      - default: '!install'
+        documentation: A comma-separated list of namespaces the operator will target.
+          Special, value `!all` means that all namespaces will be targeted. If no
+          OperatorGroup exists in `INSTALL_NAMESPACE`, a new one will be created with
+          its target namespaces set to `TARGET_NAMESPACES`, otherwise the existing
+          OperatorGroup's target namespace set will be replaced. The special value
+          `!install` will set the target namespace to the operator's installation
+          namespace.
+        name: OO_TARGET_NAMESPACES
+      - default: ""
+        documentation: (For upgrade tests) The name of the initial CSV to install.
+        name: INITIAL_CSV
+      - default: ""
+        documentation: (For upgrade tests) The name of the initial channel of the
+          operator to track.
+        name: INITIAL_CHANNEL
+      from: cli
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    test:
+    - as: optional-operators-cvp-common-scorecard
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+        set -x
+
+        OPENSHIFT_AUTH="${OPENSHIFT_AUTH:-/var/run/brew-pullsecret/.dockerconfigjson}"
+        SCORECARD_CONFIG="${SCORECARD_CONFIG:-/tmp/config/scorecard-basic-config.yml}"
+
+        # Steps for running the basic operator-sdk scorecard test
+        # Expects the standard Prow environment variables to be set and
+        # the brew proxy registry credentials to be mounted
+
+        NAMESPACE=$(grep "install_namespace:" "${SHARED_DIR}"/oo_deployment_details.yaml | cut -d ':' -f2 | xargs)
+
+        pushd "${ARTIFACT_DIR}"
+        OPERATOR_DIR="test-operator-basic"
+
+        echo "Starting the basic operator-sdk scorecard test for ${BUNDLE_IMAGE}"
+
+        echo "Extracting the operator bundle image into the operator directory"
+        mkdir -p "${OPERATOR_DIR}"
+        pushd "${OPERATOR_DIR}"
+        oc image extract "${BUNDLE_IMAGE}" --confirm -a "${OPENSHIFT_AUTH}"
+        chmod -R go+r ./
+        popd
+        echo "Extracted the following bundle data:"
+        tree "${OPERATOR_DIR}"
+
+        echo "Running the operator-sdk scorecard test using the basic configuration, json output and storing it in the artifacts directory"
+        operator-sdk scorecard --config "${SCORECARD_CONFIG}" \
+                               --namespace "${NAMESPACE}" \
+                               --kubeconfig "${KUBECONFIG}" \
+                               --output json \
+                               "${OPERATOR_DIR}" > "${ARTIFACT_DIR}"/scorecard-output-basic.json || true
+      credentials:
+      - mount_path: /var/run/brew-pullsecret
+        name: brew-registry-pullsecret
+        namespace: test-credentials
+      dependencies:
+      - env: BUNDLE_IMAGE
+        name: bundle-image
+      from_image:
+        name: cvp-operator-scorecard
+        namespace: ci
+        tag: v1
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+    - as: optional-operators-cvp-common-test
+      commands: |
+        #!/bin/bash
+
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+
+        # Collect all image pull events from the testing cluster
+        # The output will contain the timestamp and the event message
+        # in a comma-separated value format
+
+        PULL_EVENTS_ART="${ARTIFACT_DIR}/image_pull_events.txt"
+        echo "Collecting all image pull events from the testing cluster in ${PULL_EVENTS_ART}"
+        oc get events --all-namespaces --field-selector reason==Pulling -o go-template='{{range .items}}{{.lastTimestamp}},{{.message}}{{"\n"}}{{end}}' > "${PULL_EVENTS_ART}"
+      from: cli
+      resources:
+        requests:
+          cpu: 300m
+          memory: 300Mi
+zz_generated_metadata:
+  branch: ocp-4.8
+  org: redhat-operator-ecosystem
+  repo: cvp
