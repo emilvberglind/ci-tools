@@ -1,19 +1,20 @@
 import React, {useContext} from 'react';
-import {FormGroup, TextInput} from '@patternfly/react-core';
-import {WizardContext} from "@app/types";
+import {FormGroup, Text, TextContent, TextInput, TextVariants} from '@patternfly/react-core';
+import {ConfigContext, WizardContext} from "@app/types";
 import {ErrorMessage} from "@app/Common/Messaging"
 
 const RepoInfo: React.FunctionComponent = () => {
   const context = useContext(WizardContext);
+  const configContext = useContext(ConfigContext);
 
   const handleChange = (checked, event) => {
     const target = event.target;
     const name = target.name;
-    context.setConfig({...context.config, [name]: target.value});
+    configContext.setConfig({...configContext.config, [name]: target.value});
   };
 
   function onBlur(evt) {
-    let config = context.config;
+    let config = configContext.config;
     config[evt.target.name] = evt.target.value;
 
     if (config.org && config.repo && config.branch) {
@@ -22,7 +23,7 @@ const RepoInfo: React.FunctionComponent = () => {
   }
 
   function validate() {
-    let config = context.config;
+    let config = configContext.config;
     fetch('http://localhost:8080/api/configs?org=' + config.org + '&repo=' + config.repo)
       .then((r) => {
         if (r.status === 404) {
@@ -30,7 +31,7 @@ const RepoInfo: React.FunctionComponent = () => {
         } else {
           context.setStep({
             ...context.step,
-            errorMessage: "It looks like there's already a configuration for that org and repo combination.",
+            errorMessages: ["It looks like there's already a configuration for that org and repo combination. This tool currently does not support editing existing configurations, although this will be added in the future."],
             stepIsComplete: false
           });
         }
@@ -38,13 +39,18 @@ const RepoInfo: React.FunctionComponent = () => {
       .catch((e) => {
         context.setStep({
           ...context.step,
-          errorMessage: "An error occurred while validating if this configuration already exists.",
+          errorMessages: ["An error occurred while validating if this configuration already exists."],
           stepIsComplete: false
         });
       });
   }
 
   return <React.Fragment>
+    <TextContent>
+      <Text component={TextVariants.h4}>Repository Configuration</Text>
+      <Text component={TextVariants.p}>Enter the org, repo name and development branch of the component under test.</Text>
+    </TextContent>
+    <br/>
     <FormGroup
       label="Repo Organization"
       isRequired
@@ -56,7 +62,7 @@ const RepoInfo: React.FunctionComponent = () => {
         name="org"
         onBlur={onBlur}
         onChange={handleChange}
-        value={context.config.org}
+        value={configContext.config.org || ''}
       />
     </FormGroup>
     <FormGroup
@@ -70,7 +76,7 @@ const RepoInfo: React.FunctionComponent = () => {
         name="repo"
         onBlur={onBlur}
         onChange={handleChange}
-        value={context.config.repo}
+        value={configContext.config.repo || ''}
       />
     </FormGroup>
     <FormGroup
@@ -82,13 +88,12 @@ const RepoInfo: React.FunctionComponent = () => {
         type="text"
         id="branch"
         name="branch"
-        defaultValue="master"
         onBlur={onBlur}
         onChange={handleChange}
-        value={context.config.branch}
+        value={configContext.config.branch || ''}
       />
     </FormGroup>
-    <ErrorMessage errorMsg={context.step.errorMessage}/>
+    <ErrorMessage messages={context.step.errorMessages}/>
   </React.Fragment>
 
 
