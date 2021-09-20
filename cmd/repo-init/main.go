@@ -137,7 +137,7 @@ type e2eTest struct {
 	Command      string                    `json:"command"`
 	Cli          bool                      `json:"cli"`
 	Resources    *api.ResourceRequirements `json:"resources"`
-	Workflow     *string                   `json:"workflow"`
+	Workflow     string                    `json:"workflow"`
 	Environment  api.TestEnvironment       `json:"environment"`
 	Dependencies api.TestDependencies      `dependencies:"dependencies"`
 }
@@ -721,13 +721,13 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 	}
 
 	for _, test := range config.CustomE2E {
-		if test.Workflow == nil {
+		if test.Workflow == "" {
 			test.Workflow = determineWorkflowFromClusterPorfile(test.Profile)
 		}
 		t := api.TestStepConfiguration{
 			As: test.As,
 			MultiStageTestConfiguration: &api.MultiStageTestConfiguration{
-				Workflow:       test.Workflow,
+				Workflow:       &test.Workflow,
 				ClusterProfile: test.Profile,
 				Environment:    test.Environment,
 				Dependencies:   test.Dependencies,
@@ -774,7 +774,7 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 	return generated
 }
 
-func determineWorkflowFromClusterPorfile(clusterProfile api.ClusterProfile) *string {
+func determineWorkflowFromClusterPorfile(clusterProfile api.ClusterProfile) string {
 	var ret string
 	switch clusterProfile {
 	case api.ClusterProfileAWS:
@@ -790,7 +790,7 @@ func determineWorkflowFromClusterPorfile(clusterProfile api.ClusterProfile) *str
 	case api.ClusterProfileAlibaba:
 		ret = "ipi-alibaba"
 	}
-	return &ret
+	return ret
 }
 
 func getTestResourceRequest(test e2eTest) api.ResourceRequirements {
