@@ -1,31 +1,38 @@
 import React, {useContext, useState} from 'react';
 import {Button, CodeBlock, CodeBlockCode} from '@patternfly/react-core';
-import {AuthContext, WizardContext} from "@app/types";
+import {AuthContext, ConfigContext, WizardContext} from "@app/types";
 import {marshallConfig} from "@app/utils/utils";
+import {ConfigEditor} from "@app/ConfigEditor/ConfigEditor";
 
-const Finalize: React.FunctionComponent = () => {
+const Generate: React.FunctionComponent = () => {
   const authContext = useContext(AuthContext)
   const context = useContext(WizardContext);
+  const configContext = useContext(ConfigContext);
   const [isLoading, setIsLoading] = useState(false)
 
-  function submit() {
+  function submit(generatePR : boolean) {
+    alert("test");
     setIsLoading(true);
-    fetch('http://localhost:8080/api/configs', {
+    fetch(process.env.API_URI  + '/configs?generatePR=' + generatePR, {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'access_token': authContext.userData.token,
+        'github_user': authContext.userData.userName
       },
-      body: JSON.stringify(marshallConfig(context.config))
+      body: JSON.stringify(marshallConfig(configContext.config))
     })
       .then((r) => {
         if (r.status === 200) {
           context.setStep({...context.step, errorMessage: "", stepIsComplete: true});
+          r.text().then(text => {
+            alert("New Repo: " + text);
+          });
         } else {
           context.setStep({
             ...context.step,
-            errorMessage: "Whoops!",
+            errorMessages: ["Whoops!"],
             stepIsComplete: false
           });
         }
@@ -34,7 +41,7 @@ const Finalize: React.FunctionComponent = () => {
       .catch((e) => {
         context.setStep({
           ...context.step,
-          errorMessage: "Uh oh!",
+          errorMessages: ["Uh oh!"],
           stepIsComplete: false
         });
         setIsLoading(false);
@@ -42,18 +49,19 @@ const Finalize: React.FunctionComponent = () => {
   }
 
   return <React.Fragment>
-    Does this look good?
-    <CodeBlock>
-      <CodeBlockCode>
-        {JSON.stringify(context.config, null, 2)}
-      </CodeBlockCode>
-    </CodeBlock>
+    Does this look ok?
+    <ConfigEditor readOnly={true}/>
     <Button
       variant="primary"
       isLoading={isLoading}
       spinnerAriaValueText={isLoading ? 'Loading' : undefined}
-      onClick={submit}>Save!</Button>
+      onClick={() => submit(false)}>Generate Configuration</Button>
+    <Button
+      variant="primary"
+      isLoading={isLoading}
+      spinnerAriaValueText={isLoading ? 'Loading' : undefined}
+      onClick={() => submit(true)}>Generate Configuration and Pull Request</Button>
   </React.Fragment>
 }
 
-export {Finalize}
+export {Generate}
