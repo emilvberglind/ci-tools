@@ -49,6 +49,7 @@ type PrOptions struct {
 	matchTitle     string
 	prAssignee     string
 	skipPRCreation bool
+	token          string
 }
 
 // PrOption is the type for Optional Parameters
@@ -83,6 +84,12 @@ func SkipPRCreation() PrOption {
 	}
 }
 
+func Token(ghToken string) PrOption {
+	return func(args *PrOptions) {
+		args.token = ghToken
+	}
+}
+
 // UpsertPR upserts a PR. The PRTitle must be alphanumeric except for spaces, as it will be used as the
 // branchname on the bots fork.
 func (o *PRCreationOptions) UpsertPR(localSourceDir, org, repo, branch, prTitle string, setters ...PrOption) error {
@@ -114,7 +121,12 @@ func (o *PRCreationOptions) UpsertPR(localSourceDir, org, repo, branch, prTitle 
 		return fmt.Errorf("failed to get botname: %w", err)
 	}
 	username := user.Login
-	token := secret.GetSecret(o.TokenPath)
+	var token []byte
+	if prArgs.token != "" {
+		token = []byte(prArgs.token)
+	} else {
+		token = secret.GetSecret(o.TokenPath)
+	}
 	stdout := bumper.HideSecretsWriter{Delegate: os.Stdout, Censor: secret.Censor}
 	stderr := bumper.HideSecretsWriter{Delegate: os.Stderr, Censor: secret.Censor}
 

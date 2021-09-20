@@ -483,7 +483,7 @@ func TestValidateOperator(t *testing.T) {
 			linkFunc := func(string) api.StepLink {
 				return testCase.withResolvesTo
 			}
-			if actual, expected := validateOperator(newConfigContext().addField("operator"), testCase.input, linkFunc), testCase.output; !reflect.DeepEqual(actual, expected) {
+			if actual, expected := ValidateOperator(newConfigContext().addField("operator"), testCase.input, linkFunc), testCase.output; !reflect.DeepEqual(actual, expected) {
 				t.Errorf("%s: got incorrect errors: %s", testCase.name, cmp.Diff(actual, expected, cmp.Comparer(func(x, y error) bool {
 					return x.Error() == y.Error()
 				})))
