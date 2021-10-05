@@ -14,7 +14,13 @@ const Generate: React.FunctionComponent = () => {
 
   function submit(generatePR: boolean) {
     setIsLoading(true);
-    fetchWithTimeout(process.env.API_URI + '/configs?generatePR=' + generatePR, {
+    setSuccessMessage("");
+    context.setStep({
+      ...context.step,
+      errorMessages: [],
+      stepIsComplete: false
+    });
+    fetchWithTimeout(process.env.REACT_APP_API_URI + '/configs?generatePR=' + generatePR, {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
@@ -23,7 +29,7 @@ const Generate: React.FunctionComponent = () => {
         'github_user': authContext.userData.userName
       },
       body: JSON.stringify(marshallConfig(configContext.config))
-    })
+    }, 20000)
       .then((r) => {
         if (r.status === 200) {
           context.setStep({...context.step, errorMessage: "", stepIsComplete: true});
