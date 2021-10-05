@@ -1,7 +1,7 @@
 import React, {useContext, useEffect, useState} from "react";
 import {CodeEditor, Language} from "@patternfly/react-code-editor";
 import {convertConfig} from "@app/utils/utils";
-import {ConfigContext} from "@app/types";
+import {AuthContext, ConfigContext} from "@app/types";
 
 export interface ConfigEditorProps {
   readOnly: boolean;
@@ -9,15 +9,16 @@ export interface ConfigEditorProps {
 
 const ConfigEditor: React.FunctionComponent<ConfigEditorProps> = ({readOnly}) => {
   const [configYaml, setConfigYaml] = useState("");
+  const authContext = useContext(AuthContext);
   const configContext = useContext(ConfigContext);
 
   useEffect(() => {
-    convertConfig(configContext.config).then(yaml => {
+    convertConfig(configContext.config, authContext.userData).then(yaml => {
       return setConfigYaml(yaml!);
-    }).catch((e) => {
+    }).catch(() => {
       return setConfigYaml("An error occurred loading the config");
     });
-  }, []);
+  }, [configContext.config, authContext.userData]);
 
   return (
     <CodeEditor

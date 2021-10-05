@@ -8,12 +8,17 @@ import {
   Select,
   SelectOption,
   SelectVariant,
-  TextInput
+  Text,
+  TextContent,
+  TextInput,
+  TextVariants
 } from '@patternfly/react-core';
-import {ConfigContext, setVal, UpdateGraphType, WizardContext} from "@app/types";
+import {ConfigContext, UpdateGraphType, WizardContext} from "@app/types";
 import {PullspecSubstitutions} from "@app/BuildConfig/PullspecSubstitutions";
 import {BaseImages} from "@app/BuildConfig/BaseImages";
 import {ErrorMessage} from "@app/Common/Messaging";
+import {ContainerImages} from "@app/BuildConfig/ContainerImages";
+import _ from "lodash";
 
 const RepoBuildConfig: React.FunctionComponent = () => {
   const context = useContext(WizardContext);
@@ -22,23 +27,20 @@ const RepoBuildConfig: React.FunctionComponent = () => {
 
   useEffect(() => {
     validate();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleChange(val, event) {
     const target = event.target;
     const value = target.type === 'checkbox' ? target.checked : target.value;
-    let config = {...configContext.config};
-    setVal(config.buildSettings, target.name, value);
+    const config = {...configContext.config};
+    _.set(config.buildSettings, target.name, value)
     configContext.setConfig(config);
     validate();
   }
 
   function validate() {
-    let buildSettings = configContext.config.buildSettings;
-    let valid = buildSettings &&
-      buildSettings.goVersion &&
-      buildSettings.buildCommands &&
-      buildSettings.testBuildCommands;
+    const buildSettings = configContext.config.buildSettings;
+    const valid = buildSettings && buildSettings.goVersion;
     if (valid) {
       context.setStep({
         ...context.step,
@@ -55,8 +57,7 @@ const RepoBuildConfig: React.FunctionComponent = () => {
   }
 
   function changeUpdateGraphType(e, val) {
-    let config = configContext.config;
-    // @ts-ignore
+    const config = configContext.config;
     config.buildSettings.operatorConfig.updateGraph = val;
     configContext.setConfig(config);
     setUpdateGraphTypeOpen(false);
@@ -138,7 +139,6 @@ const RepoBuildConfig: React.FunctionComponent = () => {
         </FormGroup>
         <FormGroup
           label="What commands are used to build binaries? (e.g. 'go build ./cmd/...'). This will get built as the pipeline:bin image."
-          isRequired
           fieldId="buildCommands">
           <TextInput
             name="buildCommands"
@@ -150,7 +150,6 @@ const RepoBuildConfig: React.FunctionComponent = () => {
         </FormGroup>
         <FormGroup
           label="What commands are used to build test binaries? (e.g. 'go test -c ./test/...'). This will get built as the pipeline:test-bin image."
-          isRequired
           fieldId="testBuildCommands">
           <TextInput
             name="testBuildCommands"
@@ -168,6 +167,15 @@ const RepoBuildConfig: React.FunctionComponent = () => {
       <Card>
         <CardTitle>Operator Config</CardTitle>
         <CardBody>
+          <TextContent>
+            <Text component={TextVariants.p}>If this is an Optional Operator build you&lsquo;ll want to specify some
+              additional
+              settings that will allow you to take advantage of some of the Operator SDK scorecard functionality that is
+              built-in
+              to the CI workflows. See <a
+                href="https://docs.ci.openshift.org/docs/how-tos/testing-operator-sdk-operators/" target="_blank" rel="noreferrer">Testing
+                Operators</a> for more information.</Text>
+          </TextContent>
           <Checkbox
             isChecked={configContext.config.buildSettings?.operatorConfig?.isOperator}
             name="operatorConfig.isOperator"
@@ -232,11 +240,11 @@ const RepoBuildConfig: React.FunctionComponent = () => {
           </FormGroup>
           <FormGroup
             label="The update mode to use when adding the bundle to the base_index. Can be: semver, semver-skippatch, or replaces (default: semver). Requires base_index to be set."
-            fieldId="operatorConfig.targetNamespaces">
+            fieldId="operatorConfig.updateGraph">
             <Select
-              name="operatorConfig.targetNamespaces"
-              id="operatorConfig.targetNamespaces"
-              key="operatorConfig.targetNamespaces"
+              name="operatorConfig.updateGraph"
+              id="operatorConfig.updateGraph"
+              key="operatorConfig.updateGraph"
               value={configContext.config.buildSettings?.operatorConfig?.updateGraph}
               variant={SelectVariant.single}
               isOpen={updateGraphTypeOpen}
@@ -279,7 +287,11 @@ const RepoBuildConfig: React.FunctionComponent = () => {
           {CompileOptions()}
         </CardBody>
       </Card>
+      <br/>
       <BaseImages/>
+      <br/>
+      <ContainerImages/>
+      <br/>
       {OperatorOptions()}
     </React.Fragment>
   );

@@ -3,13 +3,12 @@ import {Button, Grid, GridItem, Wizard, WizardContextConsumer, WizardFooter} fro
 import {RepoBuildConfig} from "@app/BuildConfig/BuildConfig";
 import {RepoInfo} from "@app/RepoInfo/RepoInfo";
 import {TestConfig} from "@app/TestConfig/TestConfig";
-import {AuthContext, ConfigContext, WizardContext, WizardStep} from "@app/types";
+import {AuthContext, WizardContext, WizardStep} from "@app/types";
 import {Generate} from "@app/Generate/Generate";
 import {Redirect, useHistory} from "react-router-dom";
 
 const RepoInitWizard: React.FunctionComponent = () => {
   const auth = useContext(AuthContext)
-  const configContext = useContext(ConfigContext)
   const [step, setStep] = useState({} as WizardStep);
   const history = useHistory();
 
@@ -19,14 +18,31 @@ const RepoInitWizard: React.FunctionComponent = () => {
     return <Redirect to="/login"/>;
   }
 
-  function onNext(newStep) {
+  function onBack(newStep) {
     setStepIdReached(stepIdReached < newStep.id ? newStep.id : stepIdReached);
     setStep({
       step: newStep.id,
       stepIsComplete: false,
       errorMessages: []
     });
-  };
+  }
+
+  function onNext(newStep) {
+    if (step.validator === undefined || step.validator()) {
+      setStepIdReached(stepIdReached < newStep.id ? newStep.id : stepIdReached);
+      setStep({
+        step: newStep.id,
+        stepIsComplete: false,
+        errorMessages: []
+      });
+    } else {
+      setStep({
+        ...step,
+        errorMessages: ["STEP DONE BROKENED"],
+        stepIsComplete: false
+      });
+    }
+  }
 
   function goNext(onNext) {
     if (step.stepIsComplete) {
@@ -44,7 +60,7 @@ const RepoInitWizard: React.FunctionComponent = () => {
   const CustomFooter = (
     <WizardFooter>
       <WizardContextConsumer>
-        {({activeStep, goToStepByName, goToStepById, onNext, onBack, onClose}) => {
+        {({activeStep, onNext, onBack}) => {
           if (activeStep.name !== 'Verify') {
             return (
               <div>
@@ -89,13 +105,15 @@ const RepoInitWizard: React.FunctionComponent = () => {
   const title = 'Repo Config Wizard';
   return (
     <Grid>
-      <GridItem span={12}>
+      <GridItem span={12} rowSpan={12}>
         <WizardContext.Provider value={{step: step, setStep: setStep}}>
           <Wizard
             navAriaLabel={`${title} steps`}
             mainAriaLabel={`${title} content`}
             steps={steps}
             footer={CustomFooter}
+            height="100%"
+            onBack={onBack}
             onNext={onNext}/>
         </WizardContext.Provider>
       </GridItem>

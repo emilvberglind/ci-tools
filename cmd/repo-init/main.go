@@ -44,7 +44,7 @@ type options struct {
 
 	releaseRepo   string
 	config        string
-	registryPath  string
+	disableCors   bool
 	GitHubOptions flagutil.GitHubOptions
 }
 
@@ -58,6 +58,9 @@ func (o *options) Validate() error {
 	case "api":
 		if o.port == 0 {
 			return errors.New("--port is required")
+		}
+		if err := o.GitHubOptions.Validate(false); err != nil {
+			return err
 		}
 	case "ui":
 		if o.port == 0 {
@@ -92,11 +95,11 @@ func gatherOptions() options {
 	fs.StringVar(&o.mode, "mode", "cli", "Whether to run the repo initializer as an interactive cli, a standalone server, or in ui mode.")
 	fs.StringVar(&o.releaseRepo, "release-repo", "", "Path to the root of the openshift/release repository.")
 	fs.StringVar(&o.config, "config", "", "JSON configuration to use instead of the interactive mode.")
-	fs.StringVar(&o.registryPath, "registry", "", "Path to the step registry directory")
 	fs.StringVar(&o.loglevel, "loglevel", "debug", "Logging level.")
 	fs.StringVar(&o.logStyle, "log-style", "json", "Logging style: json or text.")
 	fs.IntVar(&o.port, "port", 0, "Port to run on if in server mode.")
 	fs.IntVar(&o.numRepos, "num-repos", 4, "The number of o/release repos to check out.")
+	fs.BoolVar(&o.disableCors, "disable-cors", false, "Set this to disable CORS.")
 	o.GitHubOptions.AddFlags(fs)
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Printf("ERROR: could not parse input: %v", err)
@@ -106,23 +109,24 @@ func gatherOptions() options {
 }
 
 type initConfig struct {
-	Org                   string                                 `json:"org"`
-	Repo                  string                                 `json:"repo"`
-	Branch                string                                 `json:"branch"`
-	BaseImages            map[string]api.ImageStreamTagReference `json:"base_images"`
-	CanonicalGoRepository string                                 `json:"canonical_go_repository"`
-	Promotes              bool                                   `json:"promotes"`
-	PromotesWithOpenShift bool                                   `json:"promotes_with_openshift"`
-	NeedsBase             bool                                   `json:"needs_base"`
-	NeedsOS               bool                                   `json:"needs_os"`
-	GoVersion             string                                 `json:"go_version"`
-	BuildCommands         string                                 `json:"build_commands"`
-	TestBuildCommands     string                                 `json:"test_build_commands"`
-	Tests                 []test                                 `json:"tests"`
-	CustomE2E             []e2eTest                              `json:"custom_e2e"`
-	ReleaseType           string                                 `json:"release_type"`
-	ReleaseVersion        string                                 `json:"release_version"`
-	OperatorBundle        *operatorBundle                        `json:"operator_bundle"`
+	Org                   string                                            `json:"org"`
+	Repo                  string                                            `json:"repo"`
+	Branch                string                                            `json:"branch"`
+	BaseImages            map[string]api.ImageStreamTagReference            `json:"base_images"`
+	Images                []api.ProjectDirectoryImageBuildStepConfiguration `json:"images"`
+	CanonicalGoRepository string                                            `json:"canonical_go_repository"`
+	Promotes              bool                                              `json:"promotes"`
+	PromotesWithOpenShift bool                                              `json:"promotes_with_openshift"`
+	NeedsBase             bool                                              `json:"needs_base"`
+	NeedsOS               bool                                              `json:"needs_os"`
+	GoVersion             string                                            `json:"go_version"`
+	BuildCommands         string                                            `json:"build_commands"`
+	TestBuildCommands     string                                            `json:"test_build_commands"`
+	Tests                 []test                                            `json:"tests"`
+	CustomE2E             []e2eTest                                         `json:"custom_e2e"`
+	ReleaseType           string                                            `json:"release_type"`
+	ReleaseVersion        string                                            `json:"release_version"`
+	OperatorBundle        *operatorBundle                                   `json:"operator_bundle"`
 }
 
 type test struct {
@@ -173,7 +177,7 @@ func main() {
 }
 
 func mainApi(o options) {
-	go serveAPI(o.port, o.instrumentationOptions.HealthPort, o.numRepos, o.releaseRepo, o.registryPath, o.GitHubOptions)
+	go serveAPI(o.port, o.instrumentationOptions.HealthPort, o.numRepos, o.GitHubOptions, o.disableCors)
 	interrupts.WaitForGracefulShutdown()
 }
 
@@ -617,6 +621,7 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 	}
 
 	generated.Configuration.BaseImages = config.BaseImages
+	generated.Configuration.Images = config.Images
 
 	if config.CanonicalGoRepository != "" {
 		generated.Configuration.CanonicalGoRepository = &config.CanonicalGoRepository
@@ -721,13 +726,10 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 	}
 
 	for _, test := range config.CustomE2E {
-		if test.Workflow == "" {
-			test.Workflow = determineWorkflowFromClusterPorfile(test.Profile)
-		}
 		t := api.TestStepConfiguration{
 			As: test.As,
 			MultiStageTestConfiguration: &api.MultiStageTestConfiguration{
-				Workflow:       &test.Workflow,
+				Workflow:       determineWorkflow(test.Workflow, test.Profile),
 				ClusterProfile: test.Profile,
 				Environment:    test.Environment,
 				Dependencies:   test.Dependencies,
@@ -774,23 +776,27 @@ func generateCIOperatorConfig(config initConfig, originConfig *api.PromotionConf
 	return generated
 }
 
-func determineWorkflowFromClusterPorfile(clusterProfile api.ClusterProfile) string {
+func determineWorkflow(workflow string, clusterProfile api.ClusterProfile) *string {
 	var ret string
-	switch clusterProfile {
-	case api.ClusterProfileAWS:
-		ret = "ipi-aws"
-	case api.ClusterProfileAWSArm64:
-		ret = "ipi-aws"
-	case api.ClusterProfileAzure, api.ClusterProfileAzure2, api.ClusterProfileAzure4:
-		ret = "ipi-azure"
-	case api.ClusterProfileAzureStack:
-		ret = "ipi-azurestack"
-	case api.ClusterProfileGCP:
-		ret = "ipi-gcp"
-	case api.ClusterProfileAlibaba:
-		ret = "ipi-alibaba"
+	if workflow != "" {
+		ret = workflow
+	} else {
+		switch clusterProfile {
+		case api.ClusterProfileAWS:
+			ret = "ipi-aws"
+		case api.ClusterProfileAWSArm64:
+			ret = "ipi-aws"
+		case api.ClusterProfileAzure, api.ClusterProfileAzure2, api.ClusterProfileAzure4:
+			ret = "ipi-azure"
+		case api.ClusterProfileAzureStack:
+			ret = "ipi-azurestack"
+		case api.ClusterProfileGCP:
+			ret = "ipi-gcp"
+		case api.ClusterProfileAlibaba:
+			ret = "ipi-alibaba"
+		}
 	}
-	return ret
+	return &ret
 }
 
 func getTestResourceRequest(test e2eTest) api.ResourceRequirements {

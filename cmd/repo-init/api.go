@@ -7,7 +7,6 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/openshift/ci-tools/pkg/api"
 	"github.com/openshift/ci-tools/pkg/load"
-	"github.com/openshift/ci-tools/pkg/registry"
 	"github.com/openshift/ci-tools/pkg/validation"
 	"github.com/sirupsen/logrus"
 	"io/ioutil"
@@ -22,7 +21,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -31,16 +29,11 @@ func l(fragment string, children ...simplifypath.Node) simplifypath.Node {
 	return simplifypath.L(fragment, children...)
 }
 
-type frontendServer struct {
-	logger *logrus.Entry
-	lock   sync.RWMutex
-}
-
 var (
-	apiMetrics    = metrics.NewMetrics("repo_init_api")
-	resolver      registry.Resolver
-	releaseRepo   string
+	apiMetrics = metrics.NewMetrics("repo_init_api")
+
 	githubOptions flagutil.GitHubOptions
+	disableCors   bool
 )
 
 type validationResponse struct {
@@ -60,14 +53,15 @@ type validationType string
 const (
 	All                  = validationType("ALL")
 	BaseImages           = validationType("BASE_IMAGES")
+	ContainerImages      = validationType("CONTAINER_IMAGES")
 	Tests                = validationType("TESTS")
 	OperatorBundle       = validationType("OPERATOR_BUNDLE")
 	OperatorSubstitution = validationType("OPERATOR_SUBSTITUTION")
 )
 
-func serveAPI(port, healthPort, numRepos int, releaseRepoPath, registryPath string, ghOptions flagutil.GitHubOptions) {
-	releaseRepo = releaseRepoPath
+func serveAPI(port, healthPort, numRepos int, ghOptions flagutil.GitHubOptions, disableCorsVerification bool) {
 	githubOptions = ghOptions
+	disableCors = disableCorsVerification
 
 	initRepoManager(numRepos)
 
@@ -77,14 +71,15 @@ func serveAPI(port, healthPort, numRepos int, releaseRepoPath, registryPath stri
 	health.ServeReady()
 
 	metrics.ExposeMetrics("repo-init-api", prowConfig.PushGateway{}, flagutil.DefaultMetricsPort)
-	simplifier := simplifypath.NewSimplifier(l("", // shadow element mimicing the root
+	simplifier := simplifypath.NewSimplifier(l("", // shadow element mimicking the root
 		l("api",
 			l("configs"),
 			l("config-validations"),
 		),
 	))
-	handler := metrics.TraceHandler(simplifier, uiMetrics.HTTPRequestDuration, uiMetrics.HTTPResponseSize)
+	handler := metrics.TraceHandler(simplifier, apiMetrics.HTTPRequestDuration, apiMetrics.HTTPResponseSize)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/cluster-profiles", handler(clusterProfileHandler()).ServeHTTP)
 	mux.HandleFunc("/api/configs", handler(configHandler()).ServeHTTP)
 	mux.HandleFunc("/api/config-validations", handler(configValidationHandler()).ServeHTTP)
 	httpServer := &http.Server{Addr: ":" + strconv.Itoa(port), Handler: mux}
@@ -92,12 +87,37 @@ func serveAPI(port, healthPort, numRepos int, releaseRepoPath, registryPath stri
 	logger.Debug("Ready to serve HTTP requests.")
 }
 
+func clusterProfileHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		disableCORS(w)
+		switch r.Method {
+		case http.MethodGet:
+			marshalled, err := json.Marshal(getClusterProfiles())
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, err = w.Write(marshalled)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				logrus.WithError(err).Error("unable to marshall response")
+				return
+			}
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
 func configValidationHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		disableCORS(w)
 		switch r.Method {
 		case http.MethodPost:
-			validateConfig(w, r)
+			validateConfig(w, r, retrieveAndLockAvailable)
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -111,11 +131,9 @@ func configHandler() http.HandlerFunc {
 		disableCORS(w)
 		switch r.Method {
 		case http.MethodGet:
-			loadConfigs(w, r)
+			loadConfigs(w, r, retrieveAndLockAvailable)
 		case http.MethodPost:
-			generateConfig(w, r)
-		case http.MethodPut:
-			//Not currently used, but will be when updating configs.
+			generateConfig(w, r, retrieveAndLockAvailable)
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -125,16 +143,35 @@ func configHandler() http.HandlerFunc {
 }
 
 func disableCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
+	if disableCors {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+	}
 }
 
-func loadConfigs(w http.ResponseWriter, r *http.Request) {
+func loadConfigs(w http.ResponseWriter, r *http.Request, repoGetterFunc RepoGetter) {
 	org := r.URL.Query().Get("org")
 	repo := r.URL.Query().Get("repo")
 
-	configs, err := load.FromPathByOrgRepo(getConfigPath(org, repo))
+	if org == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		logrus.Error("no org provided")
+		_, _ = w.Write([]byte("You must provide an org when querying configs."))
+		return
+	}
+
+	githubUser := r.Header.Get("github_user")
+	availableRepo, err := repoGetterFunc(githubUser)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		logrus.WithError(err).Error("unable to get available repo")
+		_, _ = w.Write([]byte("Unable to retrieve a copy of the o/release repo to use. This probably just means that all of them are in use. Please try again in a few seconds."))
+		return
+	}
+	releaseRepo := availableRepo.path
+
+	configs, err := load.FromPathByOrgRepo(getConfigPath(org, repo, releaseRepo))
 
 	if err != nil {
 		logrus.WithError(err).Error("Error while loading configs")
@@ -178,28 +215,28 @@ type SubstitutionValidationRequest struct {
 	Substitution api.PullSpecSubstitution `json:"substitution"`
 }
 
-func unmarshalValidationRequest(data []byte) (validationType, interface{}) {
+func unmarshalValidationRequest(data []byte) (validationType, interface{}, error) {
 	input := &ValidationRequest{}
 	err := json.Unmarshal(data, input)
 	if err != nil {
-		return "", nil
+		return "", nil, err
 	}
 
 	switch input.ValidationType {
 	case OperatorSubstitution:
 		request := &SubstitutionValidationRequest{}
-		_ = json.Unmarshal(input.Data, request)
+		err := json.Unmarshal(input.Data, request)
 
-		return input.ValidationType, request
+		return input.ValidationType, request, err
 	default:
 		request := &ConfigValidationRequest{}
-		_ = json.Unmarshal(input.Data, request)
+		err := json.Unmarshal(input.Data, request)
 
-		return input.ValidationType, request
+		return input.ValidationType, request, err
 	}
 }
 
-func validateConfig(w http.ResponseWriter, r *http.Request) {
+func validateConfig(w http.ResponseWriter, r *http.Request, repoGetterFunc RepoGetter) {
 	body, err := ioutil.ReadAll(r.Body)
 
 	if err != nil {
@@ -208,25 +245,32 @@ func validateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validationType, validationObject := unmarshalValidationRequest(body)
+	validationType, validationObject, err := unmarshalValidationRequest(body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		logrus.WithError(err).Error("unable to unmarshal request")
+		_, _ = w.Write([]byte("Invalid validation request"))
+		return
+	}
 
 	var validationErrors []error
 
 	// See if this is just acting on the whole configuration.
 	if configRequest, ok := validationObject.(*ConfigValidationRequest); ok {
-		generated, err := createCIOperatorConfig(configRequest.Config, releaseRepo, false)
-
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			logrus.WithError(err).Error("Unable to generate ci-operator config")
-			return
-		}
+		dataWithInfo := generateCIOperatorConfig(configRequest.Config, nil)
+		generated := &dataWithInfo.Configuration
 
 		context := validation.NewConfigContext()
 
 		switch validationType {
+		case All:
+			if err := validation.IsValidConfiguration(generated, configRequest.Config.Org, configRequest.Config.Repo); err != nil {
+				validationErrors = append(validationErrors, err)
+			}
 		case BaseImages:
 			validationErrors = append(validationErrors, validation.ValidateBaseImages(context.AddField("base_images"), generated.BaseImages)...)
+		case ContainerImages:
+			validation.ValidateImages(context.AddField("images"), generated.Images)
 		case OperatorBundle:
 			validationErrors = append(validationErrors, validation.ValidateOperator(context.AddField("operator_bundle"), generated)...)
 		case Tests:
@@ -239,12 +283,8 @@ func validateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if substitutionRequest, ok := validationObject.(*SubstitutionValidationRequest); ok {
 		// We're validating an operator pullspec substitution
-		generated, err := createCIOperatorConfig(substitutionRequest.Config, releaseRepo, false)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			logrus.WithError(err).Error("Unable to generate ci-operator config")
-			return
-		}
+		dataWithInfo := generateCIOperatorConfig(substitutionRequest.Config, nil)
+		generated := &dataWithInfo.Configuration
 
 		linkForImage := func(image string) api.StepLink {
 			return validation.LinkForImage(image, generated)
@@ -287,7 +327,7 @@ func validateConfig(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(marshalled)
 }
 
-func getConfigPath(org, repo string) string {
+func getConfigPath(org, repo, releaseRepo string) string {
 	pathElements := []string{releaseRepo, "ci-operator", "config", org}
 	if repo != "" {
 		pathElements = append(pathElements, repo)
@@ -299,7 +339,7 @@ func getConfigPath(org, repo string) string {
 
 // generateConfig is responsible for taking the initConfig and converting it into an api.ReleaseBuildConfiguration. Optionally
 // this function may also push this config to GitHub and create a pull request for the o/release repo.
-func generateConfig(w http.ResponseWriter, r *http.Request) {
+func generateConfig(w http.ResponseWriter, r *http.Request, repoGetterFunc RepoGetter) {
 	bodyBytes, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -308,6 +348,7 @@ func generateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var config initConfig
+	logrus.Debugf("Unmarshalled config as: %s", string(bodyBytes))
 	err = json.Unmarshal(bodyBytes, &config)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -315,7 +356,22 @@ func generateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// if we're only converting the initConfig, then we won't create a pull request.
+	githubUser := r.Header.Get("github_user")
+	// since we might be interacting with git, grab one of the checked out o/release repos and assign it to the current
+	// user. we'll hold on to this until all git interactions are complete to prevent weirdness resulting from multiple users
+	// dealing with the same working copy.
+	repo, err := repoGetterFunc(githubUser)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		logrus.WithError(err).Error("unable to get available repo")
+		_, _ = w.Write([]byte("Unable to retrieve a copy of the o/release repo to use. This probably just means that all of them are in use. Please try again in a few seconds."))
+		return
+	}
+
+	releaseRepo := repo.path
+	defer returnInUse(repo)
+
+	// if we're only converting the initConfig, then we won't commit any changes against the local working copy or create a pull request.
 	if conversionOnly, err := strconv.ParseBool(r.URL.Query().Get("conversionOnly")); err == nil && conversionOnly == true {
 		generatedConfig, err := createCIOperatorConfig(config, releaseRepo, false)
 
@@ -340,15 +396,7 @@ func generateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	githubUser := r.Header.Get("github_user")
-
-	// since we're going to be interacting with git, grab one of the checked out o/release repos and assign it to the current
-	// user. we'll hold on to this until all git interactions are complete to prevent weirdness resulting from multiple users
-	// dealing with the same working copy.
-	repo := retrieveAndLockAvailable(githubUser)
-	releaseRepo := repo.path
-
-	exists := configExists(config.Org, config.Repo)
+	exists := configExists(config.Org, config.Repo, releaseRepo)
 	if exists {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = fmt.Fprintf(w, "Config already exists for org: %s and repo: %s", config.Org, config.Repo)
@@ -358,34 +406,51 @@ func generateConfig(w http.ResponseWriter, r *http.Request) {
 	if err := updateProwConfig(config, releaseRepo); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		logrus.WithError(err).Error("could not update Prow configuration")
+		return
 	}
 
 	if err := updatePluginConfig(config, releaseRepo); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		logrus.WithError(err).Error("could not update Prow plugin configuration")
+		return
 	}
 
 	if _, err := createCIOperatorConfig(config, releaseRepo, true); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		logrus.WithError(err).Error("could not generate new CI Operator configuration")
+		return
 	}
 
 	createPR, _ := strconv.ParseBool(r.URL.Query().Get("generatePR"))
-	createdRepo, err := pushChanges(githubUser, r.Header.Get("access_token"), createPR)
+	branch, err := pushChanges(repo, config.Org, config.Repo, githubUser, r.Header.Get("access_token"), createPR)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		logrus.WithError(err).Error("could not push changes")
-	} else {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(createdRepo))
+		return
 	}
 
-	returnInUse(repo)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(fmt.Sprintf("https://github.com/%s/release/pull/new/%s", githubUser, branch)))
 }
 
-func configExists(org, repo string) bool {
+func configExists(org, repo, releaseRepo string) bool {
 	configPath := path.Join(releaseRepo, "ci-operator", "config", org, repo)
 	_, err := os.Stat(configPath)
 	return err == nil
+}
+
+// getClusterProfiles returns a limited set of cluster profiles to use for e2e testing.
+// TODO: this should be removed when we deprecate cluster profiles.
+func getClusterProfiles() []api.ClusterProfile {
+	return []api.ClusterProfile{
+		api.ClusterProfileAWS,
+		api.ClusterProfileAWSArm64,
+		api.ClusterProfileAzure,
+		api.ClusterProfileAzure2,
+		api.ClusterProfileAzure4,
+		api.ClusterProfileAzureStack,
+		api.ClusterProfileGCP,
+		api.ClusterProfileAlibaba,
+	}
 }

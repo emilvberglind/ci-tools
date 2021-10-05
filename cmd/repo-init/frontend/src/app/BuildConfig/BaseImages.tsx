@@ -12,43 +12,38 @@ import {
   TextInput,
   TextVariants
 } from "@patternfly/react-core";
-import {ConfigContext, Image, setVal, ValidationState, WizardContext} from "@app/types";
+import {AuthContext, ConfigContext, Image, WizardContext} from "@app/types";
 import {ErrorMessage} from "@app/Common/Messaging";
 import {validateConfig} from "@app/utils/utils";
+import _ from "lodash";
 
 const BaseImages: React.FunctionComponent = () => {
   const columns = ['Name', 'Namespace', 'Tag', '']
-  const context = useContext(WizardContext);
+  const authContext = useContext(AuthContext);
   const configContext = useContext(ConfigContext);
+  const context = useContext(WizardContext);
 
   const [curImage, setCurImage] = useState({} as Image)
   const [errorMessage, setErrorMessage] = useState([] as string[])
 
   function handleChange(val, evt) {
-    let updated = {...curImage}
-    setVal(updated, evt.target.name, val);
+    const updated = {...curImage}
+    _.set(updated, evt.target.name, val);
     setCurImage(updated);
   }
 
   function saveImage() {
     if (curImage.name && curImage.namespace && curImage.tag) {
-      let config = configContext.config;
-      let buildConfig = config.buildSettings;
+      const config = configContext.config;
+      const buildConfig = config.buildSettings;
       if (buildConfig) {
         if (!buildConfig.baseImages) {
           buildConfig.baseImages = [];
         }
         if (buildConfig.baseImages.find(t => (t.name.toLowerCase() === curImage.name.toLowerCase()) && (t.namespace.toLowerCase() === curImage.namespace.toLowerCase()) && (t.tag.toLowerCase() === curImage.tag.toLowerCase())) === undefined) {
-          let updatedBaseImages = config!.buildSettings!.baseImages!.concat(curImage);
-          let buildSettingsCopy = {...config.buildSettings, baseImages: updatedBaseImages}
-          let validationConfig = {...config, buildSettings: buildSettingsCopy};
-          validationConfig.buildSettings.baseImages.push(curImage);
-          validate(validationConfig, () => {
-            buildConfig!.baseImages!.push(curImage);
-            configContext.setConfig(config);
-            setErrorMessage([""]);
-            setCurImage({} as Image);
-          });
+          const updatedBaseImages = config.buildSettings.baseImages.concat(curImage);
+          const updatedConfig = {...config, buildSettings: {...config.buildSettings, baseImages: updatedBaseImages}};
+          validate(updatedConfig);
         } else {
           setErrorMessage(["That base image already exists"])
         }
@@ -58,13 +53,18 @@ const BaseImages: React.FunctionComponent = () => {
     }
   }
 
-  function validate(validationConfig, onSuccess) {
-    validateConfig('BASE_IMAGES', validationConfig, {})
+  function validate(validationConfig) {
+    validateConfig('BASE_IMAGES', validationConfig, authContext.userData, {})
       .then((validationState) => {
         if (validationState.valid) {
-          onSuccess();
           setErrorMessage([]);
-          context.setStep({...context.step, errorMessages: [], stepIsComplete: true});
+          configContext.setConfig(validationConfig);
+          setCurImage({} as Image);
+          context.setStep({
+            ...context.step,
+            errorMessages: [],
+            stepIsComplete: true
+          });
         } else {
           setErrorMessage(validationState.errors != undefined ? validationState.errors.map(error => error.message) : [""]);
           context.setStep({
@@ -76,60 +76,19 @@ const BaseImages: React.FunctionComponent = () => {
   }
 
   function removeImage(index) {
-    let config = configContext.config;
-    let buildConfig = config.buildSettings;
+    const config = configContext.config;
+    const buildConfig = config.buildSettings;
     if (buildConfig && buildConfig.baseImages) {
-      buildConfig.baseImages.splice(index, 1);
-      configContext.setConfig(config);
+      const updatedBaseImages = [...buildConfig.baseImages];
+      updatedBaseImages.splice(index, 1);
+      const updatedConfig = {...config, buildSettings: {...config.buildSettings, baseImages: updatedBaseImages}};
+      configContext.setConfig(updatedConfig);
     }
   }
 
-  return <Card>
-    <CardTitle>Base Images</CardTitle>
-    <CardBody>
-      <TextContent>
-        <Text component={TextVariants.p}>This provides a mapping of named <i>ImageStreamTags</i> which will be available
-          for use in container image builds.
-          See <a href="https://docs.ci.openshift.org/docs/architecture/ci-operator/#configuring-inputs" target="_blank">Configuring
-            Inputs</a>.</Text>
-      </TextContent>
-      <br/>
-      <FormGroup
-        label="Image Name"
-        fieldId="name">
-        <TextInput
-          name="name"
-          id="name"
-          value={curImage.name}
-          onChange={handleChange}
-        />
-      </FormGroup>
-      <FormGroup
-        label="Image Namespace"
-        fieldId="namespace">
-        <TextInput
-          name="namespace"
-          id="namespace"
-          value={curImage.namespace}
-          onChange={handleChange}
-        />
-      </FormGroup>
-      <FormGroup
-        label="Image Tag"
-        fieldId="tag">
-        <TextInput
-          name="tag"
-          id="tag"
-          value={curImage.tag}
-          onChange={handleChange}
-        />
-      </FormGroup>
-      <br/>
-      <ErrorMessage messages={errorMessage}/>
-      <ActionGroup>
-        <Button variant="primary" onClick={saveImage}>Add Base Image</Button>
-      </ActionGroup>
-      <TableComposable aria-label="Base Images">
+  const SummaryTable = () => {
+    if (configContext.config.buildSettings.baseImages && configContext.config.buildSettings.baseImages.length > 0) {
+      return (<TableComposable aria-label="Base Images">
         <Thead>
           <Tr>
             {columns.map((column, columnIndex) => (
@@ -157,7 +116,59 @@ const BaseImages: React.FunctionComponent = () => {
             </Tr>
           ))}
         </Tbody>
-      </TableComposable>
+      </TableComposable>);
+    } else {
+      return <React.Fragment/>
+    }
+  }
+
+  return <Card>
+    <CardTitle>Base Images</CardTitle>
+    <CardBody>
+      <TextContent>
+        <Text component={TextVariants.p}>This provides a mapping of named <i>ImageStreamTags</i> which will be available
+          for use in container image builds.
+          See <a href="https://docs.ci.openshift.org/docs/architecture/ci-operator/#configuring-inputs" target="_blank" rel="noreferrer">Configuring
+            Inputs</a>.</Text>
+      </TextContent>
+      <br/>
+      <FormGroup
+        label="Image Name"
+        fieldId="name">
+        <TextInput
+          name="name"
+          id="name"
+          value={curImage.name || ""}
+          onChange={handleChange}
+        />
+      </FormGroup>
+      <FormGroup
+        label="Image Namespace"
+        fieldId="namespace">
+        <TextInput
+          name="namespace"
+          id="namespace"
+          value={curImage.namespace || ""}
+          onChange={handleChange}
+        />
+      </FormGroup>
+      <FormGroup
+        label="Image Tag"
+        fieldId="tag">
+        <TextInput
+          name="tag"
+          id="tag"
+          value={curImage.tag || ""}
+          onChange={handleChange}
+        />
+      </FormGroup>
+      <br/>
+      <ErrorMessage messages={errorMessage}/>
+      <ActionGroup>
+        <Button variant="primary" onClick={saveImage}>Add Base Image</Button>
+      </ActionGroup>
+      <br/>
+      {SummaryTable()}
     </CardBody>
   </Card>
 }

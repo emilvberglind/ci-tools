@@ -146,7 +146,7 @@ func (v *Validator) validateConfiguration(ctx *configContext, config *api.Releas
 	}
 
 	validationErrors = append(validationErrors, validateReleases("releases", config.Releases, config.ReleaseTagConfiguration != nil)...)
-	validationErrors = append(validationErrors, validateImages(ctx.AddField("images"), config.Images)...)
+	validationErrors = append(validationErrors, ValidateImages(ctx.AddField("images"), config.Images)...)
 	validationErrors = append(validationErrors, v.ValidateTestStepConfiguration(ctx, config, resolved)...)
 	// this validation brings together a large amount of data from separate
 	// parts of the configuration, so it's written as a standalone method
@@ -225,7 +225,7 @@ func validateBuildRootImageStreamTag(ctx *configContext, buildRoot api.ImageStre
 	return validationErrors
 }
 
-func validateImages(ctx *configContext, images []api.ProjectDirectoryImageBuildStepConfiguration) []error {
+func ValidateImages(ctx *configContext, images []api.ProjectDirectoryImageBuildStepConfiguration) []error {
 	var validationErrors []error
 	for num, image := range images {
 		ctxN := ctx.addIndex(num)
