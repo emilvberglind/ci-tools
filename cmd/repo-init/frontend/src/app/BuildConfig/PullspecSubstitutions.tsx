@@ -1,12 +1,14 @@
 import React, {useContext, useState} from "react";
 import {TableComposable, Tbody, Td, Th, Thead, Tr} from "@patternfly/react-table";
 import {ActionGroup, Button, FormGroup, Text, TextContent, TextInput, TextVariants} from "@patternfly/react-core";
-import {ConfigContext, PullspecSubstitution, setVal, WizardContext} from "@app/types";
+import {AuthContext, ConfigContext, PullspecSubstitution, WizardContext} from "@app/types";
 import {ErrorMessage} from "@app/Common/Messaging";
 import {validateConfig} from "@app/utils/utils";
+import _ from "lodash";
 
 const PullspecSubstitutions: React.FunctionComponent = () => {
   const columns = ['Pullspec', 'With', '']
+  const authContext = useContext(AuthContext);
   const context = useContext(WizardContext);
   const configContext = useContext(ConfigContext);
 
@@ -14,21 +16,21 @@ const PullspecSubstitutions: React.FunctionComponent = () => {
   const [errorMessage, setErrorMessage] = useState([] as string[])
 
   function handleChange(val, evt) {
-    let updated = {...curSubstitution}
-    setVal(updated, evt.target.name, val);
+    const updated = {...curSubstitution}
+    _.set(updated, evt.target.name, val);
     setCurSubstitution(updated);
   }
 
   function saveSubstitution() {
-    let config = configContext.config;
+    const config = configContext.config;
     let operatorConfig = config.buildSettings?.operatorConfig;
     if (!operatorConfig) {
       operatorConfig = {isOperator: true, substitutions: []}
     }
     if (operatorConfig.substitutions.find(t => (t.pullspec.toLowerCase() === curSubstitution.pullspec.toLowerCase())) === undefined) {
-      let substitutionObj = {substitution: {...curSubstitution}}
+      const substitutionObj = {substitution: {...curSubstitution}}
       validate(config, substitutionObj, () => {
-        operatorConfig!.substitutions.push(curSubstitution);
+        operatorConfig.substitutions.push(curSubstitution);
         configContext.setConfig(config);
         setCurSubstitution({} as PullspecSubstitution);
       });
@@ -38,7 +40,7 @@ const PullspecSubstitutions: React.FunctionComponent = () => {
   }
 
   function validate(validationConfig, substitution, onSuccess) {
-    validateConfig('OPERATOR_SUBSTITUTION', validationConfig, substitution)
+    validateConfig('OPERATOR_SUBSTITUTION', validationConfig, authContext.userData, substitution)
       .then((validationState) => {
         if (validationState.valid) {
           onSuccess();
@@ -55,11 +57,44 @@ const PullspecSubstitutions: React.FunctionComponent = () => {
   }
 
   function removeSubstitution(index) {
-    let config = configContext.config;
-    let operatorConfig = config.buildSettings?.operatorConfig;
+    const config = configContext.config;
+    const operatorConfig = config.buildSettings?.operatorConfig;
     if (operatorConfig) {
       operatorConfig.substitutions.splice(index, 1);
       configContext.setConfig(config);
+    }
+  }
+
+  const SummaryTable = () => {
+    if (configContext.config.buildSettings.operatorConfig?.substitutions && configContext.config.buildSettings.operatorConfig?.substitutions?.length > 0) {
+      return (<TableComposable aria-label="Pullspec Substitutions">
+        <Thead>
+          <Tr>
+            {columns.map((column, columnIndex) => (
+              <Th key={columnIndex}>{column}</Th>
+            ))}
+          </Tr>
+        </Thead>
+        <Tbody>
+          {configContext.config.buildSettings?.operatorConfig?.substitutions?.map((row, rowIndex) => (
+            <Tr key={rowIndex}>
+              <Td key={`${rowIndex}_${0}`} dataLabel={columns[0]}>
+                {row.pullspec}
+              </Td>
+              <Td key={`${rowIndex}_${1}`} dataLabel={columns[1]}>
+                {row.with}
+              </Td>
+              <Td key={`${rowIndex}_${2}`} dataLabel={columns[2]}>
+                <ActionGroup>
+                  <Button variant="danger" onClick={() => removeSubstitution(rowIndex)}>Delete</Button>
+                </ActionGroup>
+              </Td>
+            </Tr>
+          ))}
+        </Tbody>
+      </TableComposable>);
+    } else {
+      return <React.Fragment/>;
     }
   }
 
@@ -94,32 +129,8 @@ const PullspecSubstitutions: React.FunctionComponent = () => {
       <ActionGroup>
         <Button variant="primary" onClick={saveSubstitution}>Add Substitution</Button>
       </ActionGroup>
-      <TableComposable aria-label="Pullspec Substitutions">
-        <Thead>
-          <Tr>
-            {columns.map((column, columnIndex) => (
-              <Th key={columnIndex}>{column}</Th>
-            ))}
-          </Tr>
-        </Thead>
-        <Tbody>
-          {configContext.config.buildSettings?.operatorConfig?.substitutions?.map((row, rowIndex) => (
-            <Tr key={rowIndex}>
-              <Td key={`${rowIndex}_${0}`} dataLabel={columns[0]}>
-                {row.pullspec}
-              </Td>
-              <Td key={`${rowIndex}_${1}`} dataLabel={columns[1]}>
-                {row.with}
-              </Td>
-              <Td key={`${rowIndex}_${2}`} dataLabel={columns[2]}>
-                <ActionGroup>
-                  <Button variant="danger" onClick={() => removeSubstitution(rowIndex)}>Delete</Button>
-                </ActionGroup>
-              </Td>
-            </Tr>
-          ))}
-        </Tbody>
-      </TableComposable>
+      <br/>
+      {SummaryTable()}
     </React.Fragment>)
 }
 

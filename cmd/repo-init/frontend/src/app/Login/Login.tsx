@@ -2,7 +2,7 @@ import React, {useContext, useEffect, useState} from "react";
 import {AuthContext, ghAuthState} from "@app/types";
 import {GithubIcon} from "@patternfly/react-icons";
 import Styled from "styled-components";
-import {Redirect, useHistory} from "react-router-dom";
+import {useHistory} from "react-router-dom";
 
 const Login: React.FunctionComponent = () => {
   const authContext = useContext(AuthContext)
@@ -19,7 +19,7 @@ const Login: React.FunctionComponent = () => {
       const hasCode = url.includes("?code=");
 
       // If Github API returns the code parameter
-      if (hasCode) {
+      if (hasCode && ghAuthState.client_id && ghAuthState.client_secret && ghAuthState.redirect_uri) {
         const newUrl = url.split("?code=");
         window.history.pushState({}, "", newUrl[0]);
         setData({...data, isLoading: true, errorMessage: ""});
@@ -27,10 +27,10 @@ const Login: React.FunctionComponent = () => {
         const code = newUrl[1];
 
         const requestData = new FormData();
-        requestData.append("client_id", ghAuthState.client_id!);
-        requestData.append("client_secret", ghAuthState.client_secret!);
+        requestData.append("client_id", ghAuthState.client_id);
+        requestData.append("client_secret", ghAuthState.client_secret);
         requestData.append("code", code);
-        requestData.append("redirect_uri", ghAuthState.redirect_uri!);
+        requestData.append("redirect_uri", ghAuthState.redirect_uri);
 
         // Request to exchange code for an access token
         let access_token;
@@ -40,11 +40,11 @@ const Login: React.FunctionComponent = () => {
         })
           .then((response) => response.text())
           .then((paramsString) => {
-            let params = new URLSearchParams(paramsString);
+            const params = new URLSearchParams(paramsString);
             access_token = params.get("access_token");
 
             // Request to return data of a user that has been authenticated
-            return fetch(process.env.GITHUB_API_URI  + `/user`, {
+            return fetch(process.env.GITHUB_API_URI + `/user`, {
               headers: {
                 Authorization: `token ${access_token}`,
               },
@@ -59,12 +59,8 @@ const Login: React.FunctionComponent = () => {
               token: access_token
             });
             history.push('/repo-init');
-            setData({
-              isLoading: false,
-              errorMessage: ""
-            })
           })
-          .catch((error) => {
+          .catch(() => {
             setData({
               isLoading: false,
               errorMessage: "Sorry! Login failed"
@@ -72,7 +68,7 @@ const Login: React.FunctionComponent = () => {
           });
       }
     }
-  }, [data]);
+  }, [data, authContext, history]);
 
   return (
     <Wrapper>

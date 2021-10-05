@@ -1,9 +1,9 @@
 **/node_modules
-dist
+dist/*
+!dist/dummy
 yarn-error.log
 stats.json
 coverage
-storybook-static
 .DS_Store
 .idea
 .env

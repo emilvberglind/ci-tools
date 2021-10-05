@@ -1,6 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import App from '@app/index';
+import _ from "lodash";
+
+global._ = _;
 
 if (process.env.NODE_ENV !== "production") {
   const config = {

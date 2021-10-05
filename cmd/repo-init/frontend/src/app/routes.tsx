@@ -55,7 +55,6 @@ const routes: AppRouteConfig[] = [
       },
       {
         component: ConfigEditor,
-        label: 'Config Editor',
         path: '/config-editor',
         title: 'Edit Raw Config',
       }

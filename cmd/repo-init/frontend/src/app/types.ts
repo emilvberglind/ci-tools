@@ -48,25 +48,26 @@ export interface AuthContextInterface {
   updateContext?: any;
 }
 
-export interface RepoConfigInterface {
+export interface RepoConfig {
   org?: string;
   repo?: string;
   branch?: string;
-  buildSettings: RepoConfigBuildSettings;
+  buildSettings: BuildConfig;
   tests: Test[];
 }
 
-export interface RepoConfigBuildSettings {
+export interface BuildConfig {
   buildPromotes?: boolean;
   partOfOSRelease?: boolean;
   needsBase?: boolean;
   needsOS?: boolean;
   goVersion?: string;
   canonicalGoRepository?: string;
-  baseImages?: Image[];
+  baseImages: Image[];
+  containerImages: ContainerImage[];
   buildCommands?: string;
   testBuildCommands?: string;
-  operatorConfig?: OperatorConfig
+  operatorConfig: OperatorConfig
   release: ReleaseConfig
 }
 
@@ -91,38 +92,33 @@ export interface Image {
   tag: string;
 }
 
+export interface ContainerImage {
+  name: string;
+  from: string;
+  literalDockerfile: boolean;
+  dockerfile: string;
+  inputs?: ContainerImageInput[]
+}
+
+export interface ContainerImageInput {
+  name: string;
+  replaces: string;
+}
+
 export interface PullspecSubstitution {
   pullspec: string;
   with: string;
 }
-
-export interface WizardStep {
-  step?: number;
-  stepIsComplete?: boolean;
-  errorMessages?: string[];
-}
-
-export interface WizardContextInterface {
-  step: WizardStep;
-  setStep?: any;
-}
-
-export interface ConfigContextInterface {
-  config: RepoConfigInterface;
-  setConfig?: any;
-}
-
-export const ConfigContext = createContext({} as ConfigContextInterface)
-export const WizardContext = createContext({} as WizardContextInterface);
-export const AuthContext = createContext({userData: {isAuthenticated: false}} as AuthContextInterface);
 
 export type Test = {
   name: string;
   requiresBuiltBinaries?: boolean;
   requiresTestBinaries?: boolean;
   testCommands?: string;
+  from?: string;
   type: TestType;
   requiresCli: boolean;
+  clusterProfile?: string;
   cloudProvider?: CloudProvider;
   operatorConfig?: OperatorTestConfig;
   env: { [env: string]: string };
@@ -149,14 +145,6 @@ export enum CloudProvider {
   Gcp = 'Gcp'
 }
 
-export enum OperatorParams {
-  channel,
-  installNamespace,
-  package,
-  targetNamespaces,
-  indexName
-}
-
 export enum UpdateGraphType {
   semver = 'semver',
   semverSkippatch = 'semver_skippatch',
@@ -170,13 +158,23 @@ export enum ReleaseType {
   Nightly = 'Nightly'
 }
 
-export function setVal(obj, is, value) {
-  if (typeof is == 'string')
-    return setVal(obj, is.split('.'), value);
-  else if (is.length == 1 && value !== undefined)
-    return obj[is[0]] = value;
-  else if (is.length == 0)
-    return obj;
-  else
-    return setVal(obj[is[0]], is.slice(1), value);
+export interface WizardStep {
+  step?: number;
+  stepIsComplete?: boolean;
+  errorMessages?: string[];
+  validator?: () => boolean;
 }
+
+export interface WizardContextInterface {
+  step: WizardStep;
+  setStep?: any;
+}
+
+export interface ConfigContextInterface {
+  config: RepoConfig;
+  setConfig?: any;
+}
+
+export const ConfigContext = createContext({} as ConfigContextInterface)
+export const WizardContext = createContext({} as WizardContextInterface);
+export const AuthContext = createContext({userData: {isAuthenticated: false}} as AuthContextInterface);

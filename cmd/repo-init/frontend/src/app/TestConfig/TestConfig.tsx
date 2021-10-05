@@ -5,23 +5,25 @@ import {
   Card,
   CardBody,
   CardTitle,
-  Checkbox,
   Form,
   FormGroup,
   Popover,
   Select,
   SelectOption,
   SelectVariant,
+  Text,
   TextInput
 } from '@patternfly/react-core';
 import {Caption, TableComposable, Tbody, Td, Th, Thead, Tr} from '@patternfly/react-table';
-import {ConfigContext, ReleaseType, setVal, Test, TestType, WizardContext} from "@app/types";
+import {AuthContext, CloudProvider, ConfigContext, ReleaseType, Test, TestType, WizardContext} from "@app/types";
 import {ErrorMessage} from "@app/Common/Messaging";
 import HelpIcon from '@patternfly/react-icons/dist/js/icons/help-icon';
 import {testTypeHelpText} from "@app/Common/helpText";
 import {validateConfig} from "@app/utils/utils";
+import _ from "lodash";
 
 const TestConfig: React.FunctionComponent = () => {
+  const authContext = useContext(AuthContext);
   const context = useContext(WizardContext);
   const configContext = useContext(ConfigContext);
 
@@ -30,13 +32,19 @@ const TestConfig: React.FunctionComponent = () => {
     testCommands: '',
     operatorConfig: {}
   } as Test)
+
   const [typeOpen, setTypeOpen] = useState(false);
   const [releaseTypeOpen, setReleaseTypeOpen] = useState(false);
+  const [clusterProfileOpen, setClusterProfileOpen] = useState(false);
+  const [cloudProviderOpen, setCloudProviderOpen] = useState(false);
+
+  const [clusterProfiles, setClusterProfiles] = useState([]);
   const columns = ['Name', 'Requires Binaries', 'Requires Test Binaries', 'Test Commands', '']
 
   useEffect(() => {
+    loadClusterProfiles();
     validate();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function validate() {
     if (configContext.config.tests.length > 0) {
@@ -55,13 +63,13 @@ const TestConfig: React.FunctionComponent = () => {
   }
 
   function saveTest() {
-    let tests = configContext.config.tests;
+    const tests = configContext.config.tests;
     if (tests.find(t => (t.name.toLowerCase() === curTest.name.toLowerCase())) === undefined) {
       if (curTest.name.trim() !== "" && curTest.testCommands !== "") {
-        let updatedTests = configContext.config.tests.concat(curTest);
-        let validationConfig = {...configContext.config, tests: updatedTests};
+        const updatedTests = configContext.config.tests.concat(curTest);
+        const validationConfig = {...configContext.config, tests: updatedTests};
 
-        validateConfig('TESTS', validationConfig, {})
+        validateConfig('TESTS', validationConfig, authContext.userData, {})
           .then((validationState) => {
             if (validationState.valid) {
               tests.push(curTest);
@@ -94,14 +102,14 @@ const TestConfig: React.FunctionComponent = () => {
   }
 
   function removeTest(index) {
-    let tests = configContext.config.tests;
+    const tests = configContext.config.tests;
     tests.splice(index, 1);
     configContext.setConfig({...configContext.config, tests: tests});
   }
 
   function handleChange(val, evt) {
-    let updated = {...curTest};
-    setVal(updated, evt.target.name, val);
+    const updated = {...curTest};
+    _.set(updated, evt.target.name, val);
     setCurTest(updated);
   }
 
@@ -115,13 +123,13 @@ const TestConfig: React.FunctionComponent = () => {
   }
 
   function changeReleaseVersion(val) {
-    let buildSettings = {...configContext.config.buildSettings}
+    const buildSettings = {...configContext.config.buildSettings}
     buildSettings.release.version = val;
     configContext.setConfig({...configContext.config, buildSettings: buildSettings});
   }
 
   function changeReleaseType(e, val) {
-    let buildSettings = {...configContext.config.buildSettings}
+    const buildSettings = {...configContext.config.buildSettings}
     buildSettings.release.type = val;
     configContext.setConfig({...configContext.config, buildSettings: buildSettings});
     setReleaseTypeOpen(false);
@@ -129,6 +137,41 @@ const TestConfig: React.FunctionComponent = () => {
 
   function toggleReleaseType(open) {
     setReleaseTypeOpen(open);
+  }
+
+  function changeClusterProfile(e, val) {
+    setCurTest({...curTest, clusterProfile: val});
+    setClusterProfileOpen(false);
+  }
+
+  function toggleClusterProfile(open) {
+    setClusterProfileOpen(open);
+  }
+
+  function changeCloudProvider(e, val) {
+    setCurTest({...curTest, cloudProvider: val});
+    setCloudProviderOpen(false);
+  }
+
+  function toggleCloudProvider(open) {
+    setCloudProviderOpen(open);
+  }
+
+  function loadClusterProfiles() {
+    fetch(process.env.API_URI + '/cluster-profiles', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
+      .then((r) => {
+        return r.json().then((profiles) => {
+          setClusterProfiles(profiles);
+        });
+      })
+      .catch(() => {
+        return undefined;
+      });
   }
 
   const TypeSpecificElements = () => {
@@ -172,6 +215,8 @@ const TestConfig: React.FunctionComponent = () => {
             <FormGroup
               label="Bundle Install Namespace."
               fieldId="operatorConfig.installNamespace"
+              helperText={<Text>The namespace into which the operator and catalog will be installed. Special, default
+                value <strong>!create</strong> means that a new namespace will be created.</Text>}
               isRequired>
               <TextInput
                 name="operatorConfig.installNamespace"
@@ -183,6 +228,12 @@ const TestConfig: React.FunctionComponent = () => {
             <FormGroup
               label="Bundle target namespaces."
               fieldId="operatorConfig.targetNamespaces"
+              helperText={<Text>A comma-separated list of namespaces the operator will target. Special, default
+                value <strong>!all</strong> means that all namespaces will be targeted.
+                If no OperatorGroup exists in the install namespace, a new one will be created with its target
+                namespaces set to the target namespaces.
+                Otherwise, the existing OperatorGroup’s target namespace set will be replaced. The special value
+                <strong>!install</strong> will set the target namespace to the operator’s installation namespace.</Text>}
               isRequired>
               <TextInput
                 name="operatorConfig.targetNamespaces"
@@ -191,9 +242,48 @@ const TestConfig: React.FunctionComponent = () => {
                 onChange={handleChange}
               />
             </FormGroup>
+            <FormGroup fieldId="cloudProvider"
+                       label="What cloud provider should this test execute on?">
+              <Select
+                variant={SelectVariant.single}
+                id="clusterProfile"
+                isOpen={cloudProviderOpen}
+                onToggle={toggleCloudProvider}
+                onSelect={changeCloudProvider}
+                name="cloudProvider"
+                selections={curTest.cloudProvider}>
+                {Object.keys(CloudProvider).filter(k => isNaN(Number(k))).map((val, index) => (
+                  <SelectOption
+                    key={index}
+                    value={val}
+                  />
+                ))}
+              </Select>
+            </FormGroup>
           </CardBody>
         </Card>
-      )
+      );
+    } else if (curTest.type === TestType.E2e) {
+      return (
+        <FormGroup fieldId="clusterProfile"
+                   label="Which cluster profile does this test use?">
+          <Select
+            variant={SelectVariant.single}
+            id="clusterProfile"
+            isOpen={clusterProfileOpen}
+            onToggle={toggleClusterProfile}
+            onSelect={changeClusterProfile}
+            name="clusterProfile"
+            selections={curTest.clusterProfile}>
+            {clusterProfiles.map((val) => (
+              <SelectOption
+                key={"clusterProfile_" + val}
+                value={val}
+              />
+            ))}
+          </Select>
+        </FormGroup>
+      );
     } else {
       return (
         <React.Fragment/>
@@ -265,7 +355,7 @@ const TestConfig: React.FunctionComponent = () => {
           onSelect={changeTestType}
           name="type"
           selections={curTest.type}>
-          {Object.keys(TestType).filter(k => isNaN(Number(k))).map((val, index) => (
+          {Object.keys(TestType).filter(k => isNaN(Number(k)) && (k !== TestType.Operator || configContext.config.buildSettings.operatorConfig?.isOperator)).map((val, index) => (
             <SelectOption
               key={index}
               value={val}
@@ -282,19 +372,15 @@ const TestConfig: React.FunctionComponent = () => {
           name="name"
           value={curTest.name}/>
       </FormGroup>
-      <Checkbox
-        id="requiresBuiltBinaries"
-        name="requiresBuiltBinaries"
-        label="This test requires built binaries"
-        onChange={handleChange}
-        isChecked={curTest.requiresBuiltBinaries}
-      />
-      <Checkbox
-        name="requiresTestBinaries"
-        label="This test requires test binaries"
-        id="requiresTestBinaries"
-        onChange={handleChange}
-        isChecked={curTest.requiresTestBinaries}/>
+      <FormGroup fieldId="from"
+                 label="What container should these tests run in?"
+                 helperText="This is the image of the container that the tests will execute in. For example, if the tests should execute within the source of your repo, you can use the 'src' container.">
+        <TextInput
+          id="from"
+          name="from"
+          onChange={handleChange}
+          value={curTest.from || ''}/>
+      </FormGroup>
       <FormGroup fieldId="testCommands"
                  label="What commands in the repository run the test?"
                  helperText="These are the commands used to execute the tests against the repository. e.g. make test-unit">
